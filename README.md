@@ -1,9 +1,9 @@
 # distroless-setup
 
 [![npm version](https://img.shields.io/npm/v/distroless-setup.svg)](https://www.npmjs.com/package/distroless-setup)
-[![npm downloads](https://img.shields.io/npm/dm/distroless-setup.svg)](https://www.npmjs.com/package/distroless-setup)
+[![GitHub Release](https://img.shields.io/github/v/release/replaylogic/distroless-setup)](https://github.com/replaylogic/distroless-setup/releases)
 [![CI](https://github.com/replaylogic/distroless-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/replaylogic/distroless-setup/actions/workflows/ci.yml)
-[![license](https://img.shields.io/npm/l/distroless-setup.svg)](LICENSE)
+[![license](https://img.shields.io/github/license/replaylogic/distroless-setup.svg)](LICENSE)
 
 Move an **Angular**, **Node.js** or **Python** app to a [distroless](https://github.com/GoogleContainerTools/distroless) container image: no shell, no package manager, non-root, read-only-root friendly.
 
