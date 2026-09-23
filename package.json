@@ -4,6 +4,15 @@
   "description": "Move Angular, Node.js (Express, NestJS, Next.js) and Python (FastAPI, Flask, Django) apps to distroless container images. Interactive, shows a plan, backs up every file it touches, and writes a migration report.",
   "keywords": ["distroless", "docker", "dockerfile", "container", "security", "angular", "nodejs", "nextjs", "nestjs", "express", "python", "fastapi", "django", "flask", "cli"],
   "license": "MIT",
+  "author": "The distroless-setup contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/replaylogic/distroless-setup.git"
+  },
+  "homepage": "https://github.com/replaylogic/distroless-setup#readme",
+  "bugs": {
+    "url": "https://github.com/replaylogic/distroless-setup/issues"
+  },
   "bin": {
     "distroless-setup": "dist/cli.js"
   },
@@ -17,10 +26,8 @@
     "test": "npm run build && node --test test/*.test.js",
     "prepublishOnly": "npm test"
   },
-  "dependencies": {
-    "typescript": "^5.4.0"
-  },
   "devDependencies": {
+    "typescript": "^5.4.0",
     "@types/node": "^20.11.0"
   }
 }
