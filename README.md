@@ -1,5 +1,10 @@
 # distroless-setup
 
+[![npm version](https://img.shields.io/npm/v/distroless-setup.svg)](https://www.npmjs.com/package/distroless-setup)
+[![npm downloads](https://img.shields.io/npm/dm/distroless-setup.svg)](https://www.npmjs.com/package/distroless-setup)
+[![CI](https://github.com/replaylogic/distroless-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/replaylogic/distroless-setup/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/distroless-setup.svg)](LICENSE)
+
 Move an **Angular**, **Node.js** or **Python** app to a [distroless](https://github.com/GoogleContainerTools/distroless) container image: no shell, no package manager, non-root, a fraction of the CVEs.
 
 ```bash
@@ -16,16 +21,35 @@ It looks at your repo, asks a few questions (every one has a sensible default), 
 
 ## Usage
 
+There are two ways to point it at a project — pick whichever fits, they're not sequential steps:
+
+**Let it detect the stack:**
+
 ```bash
-npx distroless-setup                   # detect the project type in the current folder
+npx distroless-setup
+```
+
+It looks at the current folder, tells you what it found, and asks you to confirm before it does anything else. Nothing changes if you say no.
+
+**Or name the stack up front** — same tool, same confirmation step, just skips detection:
+
+```bash
 npx distroless-setup node ./services/api
-npx distroless-setup python --dry-run  # show the plan; write only the report
-npx distroless-setup angular --yes     # accept every default (CI, scripted runs)
+npx distroless-setup python
+npx distroless-setup angular
+```
+
+Either form takes the same flags:
+
+```bash
+npx distroless-setup --dry-run          # detect, but only show the plan and write the report
+npx distroless-setup python --dry-run   # named stack + dry run
+npx distroless-setup angular --yes      # named stack, accept every default (CI, scripted runs)
 ```
 
 | Option | |
 |---|---|
-| `angular` \| `node` \| `python` | Skip detection. Aliases: `nest`, `next`, `express`, `fastapi`, `django`, `flask`. |
+| `angular` \| `node` \| `python` | Optional. Names the stack and skips detection. Aliases: `nest`, `next`, `express`, `fastapi`, `django`, `flask`. Leave it out to auto-detect instead. |
 | `-n`, `--dry-run` | Print the plan and the generated Dockerfile; write only `DISTROLESS-MIGRATION.md`, marked as a dry run. |
 | `-y`, `--yes` | Use every default without prompting. |
 | `-h`, `--help` / `-v`, `--version` | |
@@ -132,12 +156,29 @@ Open `DISTROLESS-MIGRATION.md`. **Action required** is the ordered to-do list fo
 - handle SIGTERM;
 - pin the digest.
 
-It also has the build/run/verify commands, a Kubernetes/OpenShift `securityContext` and probes, how to debug an image with no shell, and every CI file that still mentions nginx or shell tools.
+It also has the build/run/verify commands, a Kubernetes/OpenShift `securityContext` and probes, and every CI file that still mentions nginx or shell tools.
 
 ```bash
 docker build -t myapp:distroless .
 docker run --rm -p 8080:8080 myapp:distroless
 ```
+
+## Debugging a distroless image
+
+A distroless runtime has no shell, no package manager and no coreutils, so `docker exec -it ... sh` won't work. Logs and everything else you need are still available:
+
+**Logs.** No change needed — all three stacks are set up to log to stdout/stderr, so `docker logs <container>` and `kubectl logs <pod>` work exactly as normal. This doesn't require a shell inside the image at all.
+
+**A shell for interactive debugging**, in order of preference:
+
+| Situation | Command |
+|---|---|
+| Docker Desktop, local | `docker debug <container>` — attaches a debug toolbox to a running container without modifying the image |
+| Kubernetes / OpenShift | `kubectl debug -it <pod> --image=busybox --target=<container>` — attaches an ephemeral container sharing the pod's process namespace, so `/proc/<pid>/root` is the target's filesystem |
+| Inspect files without a shell | `docker cp <container>:/path ./local-path` — works against a stopped or running container |
+| Compose / local, need it often | Build a `-debug` variant of your image on `gcr.io/distroless/*-debug` (busybox + shell) for local troubleshooting; keep the production tag on the non-debug base |
+
+`DISTROLESS-MIGRATION.md` fills in the exact `docker debug` / `kubectl debug` invocation for the image just generated, plus the health-check and probe commands for your stack.
 
 ## Limitations
 
@@ -149,14 +190,12 @@ docker run --rm -p 8080:8080 myapp:distroless
 
 ## Contributing
 
-```bash
-npm install
-npm test        # builds, then runs the unit tests with node --test
-node dist/cli.js --dry-run /path/to/an/app
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Bug reports are most useful with the `--dry-run` output and the kind of project (framework, version, package manager).
+## Security
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
