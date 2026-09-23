@@ -104,6 +104,21 @@ Most useful with:
   `--version`/`--help`) on Linux, macOS and Windows across supported Node versions.
 - Describe what changed and why in the PR description; link any related issue.
 
+## CI behavior
+
+A `classify` job runs first and decides whether the rest of the pipeline needs to run. A
+change that touches only documentation/support paths (`docs/**`, `README.md`,
+`CONTRIBUTING.md`, `CHANGELOG.md`, `SECURITY.md`, `.github/FUNDING.yml`, and similar —
+see `.github/scripts/classify-ci-changes.sh` for the exact list) skips the unit matrix and
+Docker integration tests. Any other change, including a mix of docs and product files, an
+unrecognized path, or a change to CI config itself, runs the full suite. `ci-success` — the
+required branch-protection check — always runs and reflects this: it passes on a
+documentation-only PR once classification succeeds, and otherwise requires both the unit
+matrix and the integration job to succeed.
+
+Automated AI/tool attribution trailers are not used in this repository. Legitimate human
+co-authorship remains supported. See `CLAUDE.md`.
+
 ## Security issues
 
 Please don't file a public issue for a vulnerability — see [SECURITY.md](SECURITY.md).
