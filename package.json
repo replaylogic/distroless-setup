@@ -26,8 +26,10 @@
     "test": "npm run build && node --test test/*.test.js",
     "prepublishOnly": "npm test"
   },
+  "dependencies": {
+    "typescript": "^5.4.0"
+  },
   "devDependencies": {
-    "typescript": "^5.4.0",
     "@types/node": "^20.11.0"
   }
 }
