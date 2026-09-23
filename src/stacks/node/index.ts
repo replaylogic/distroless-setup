@@ -479,7 +479,10 @@ export const nodeStack: Stack = {
       ],
       actions, sections,
       runEnv: env.all.filter((v) => !v.startsWith("NEXT_PUBLIC_") && v !== "PORT").slice(0, 5).map((v) => `-e ${v}=...`),
-      verify: [], dockerignoreRecommended: ["node_modules", "npm-debug.log*", ".git", "coverage", ".next", "dist", ".env", ".env.local", ".env.*.local", "*.pem"],
+      verify: [],
+      // Node itself writes nothing; Next.js keeps its ISR/image cache under .next/cache.
+      writablePaths: mode === "plain" ? ["/tmp"] : ["/tmp", "/app/.next/cache"],
+      dockerignoreRecommended: ["node_modules", "npm-debug.log*", ".git", "coverage", ".next", "dist", ".env", ".env.local", ".env.*.local", "*.pem"],
       dockerignoreNeeded: ["package.json", ...(install.pm.lock ? [install.pm.lock] : []), ...install.extras.map((e) => e.replace(/\/+$/, ""))],
       reviewHits, healthPath: health,
     };

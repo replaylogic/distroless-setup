@@ -1,7 +1,7 @@
 /* File helpers and the change plan (every write/remove is backed up before it happens). */
 import * as fs from "fs";
 import * as path from "path";
-import { s } from "./ui";
+import { AbortError, s } from "./ui";
 
 export const BACKUP_DIR = ".distroless-backup";
 export const SKIP_DIRS = new Set([
@@ -83,6 +83,43 @@ export const validPort = (v: string) =>
 type Action = { kind: "write" | "remove"; path: string; content: string; reason: string };
 export type Label = "CREATE" | "UPDATE" | "REMOVE";
 
+const realpath = (p: string) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
+
+/**
+ * Where a path really lands, with symlinks resolved: the deepest existing ancestor is
+ * resolved, then the missing segments are re-appended. A symlinked file resolves to its
+ * target, and a symlinked *parent* directory cannot redirect a write to a new file.
+ */
+function resolveTarget(p: string): string {
+  const abs = path.resolve(p);
+  let link: string | null = null;
+  try { link = fs.lstatSync(abs).isSymbolicLink() ? fs.readlinkSync(abs) : null; } catch { link = null; }
+  if (link !== null) return realpath(path.resolve(path.dirname(abs), link));
+
+  const missing: string[] = [];
+  let probe = abs;
+  while (!fs.existsSync(probe)) {
+    const parent = path.dirname(probe);
+    if (parent === probe) return abs;
+    missing.unshift(path.basename(probe));
+    probe = parent;
+  }
+  return path.resolve(realpath(probe), ...missing);
+}
+
+/**
+ * Refuses any path that would take a write or a removal outside the chosen repo,
+ * whether through `..` in an answer or through a symlink pointing elsewhere.
+ * Checked when the action is planned, so it fails before anything is written.
+ */
+function assertInsideRepo(repo: string, p: string) {
+  const root = realpath(repo);
+  const target = resolveTarget(p);
+  const r = path.relative(root, target);
+  if (r === "" || r.startsWith("..") || path.isAbsolute(r))
+    throw new AbortError(`refusing to touch '${p}': it resolves to ${target}, outside ${root}`);
+}
+
 export class Plan {
   actions: Action[] = [];
   readonly stamp: string;
@@ -92,8 +129,13 @@ export class Plan {
   constructor(public readonly repo: string) {
     const d = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
-    this.stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-    this.backupRoot = path.join(repo, BACKUP_DIR, this.stamp);
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    // Two runs in the same second must not share a backup directory: the second would
+    // copy over the first run's backups, losing the files as they were before any run.
+    let dir = path.join(repo, BACKUP_DIR, stamp);
+    for (let n = 2; fs.existsSync(dir); n++) dir = path.join(repo, BACKUP_DIR, `${stamp}-${n}`);
+    this.stamp = path.basename(dir);
+    this.backupRoot = dir;
   }
 
   private drop(p: string) {
@@ -101,11 +143,13 @@ export class Plan {
   }
 
   write(p: string, content: string, reason: string) {
+    assertInsideRepo(this.repo, p);
     this.drop(p);
     this.actions.push({ kind: "write", path: p, content, reason });
   }
 
   remove(p: string, reason: string) {
+    assertInsideRepo(this.repo, p);
     this.drop(p);
     this.actions.push({ kind: "remove", path: p, content: "", reason });
   }
@@ -142,21 +186,35 @@ export class Plan {
   }
 
   apply(): string | null {
+    // Re-check every path before touching anything: an action planned early could have
+    // been overtaken by a symlink or a deleted parent, and a half-applied plan is worse
+    // than one that never starts.
+    for (const a of this.actions) assertInsideRepo(this.repo, a.path);
+
     this.frozen = new Map(this.actions.map((a) => [a.path, this.label(a)]));
     let backedUp = false;
+    const done: string[] = [];
     for (const a of this.actions) {
-      if (exists(a.path)) {
-        const dest = path.join(this.backupRoot, rel(this.repo, a.path));
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        fs.cpSync(a.path, dest, { recursive: true });
-        backedUp = true;
+      try {
+        if (exists(a.path)) {
+          const dest = path.join(this.backupRoot, rel(this.repo, a.path));
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          fs.cpSync(a.path, dest, { recursive: true });
+          backedUp = true;
+        }
+        if (a.kind === "write") {
+          fs.mkdirSync(path.dirname(a.path), { recursive: true });
+          fs.writeFileSync(a.path, a.content, "utf8");
+        } else if (exists(a.path)) {
+          fs.rmSync(a.path, { recursive: true, force: true });
+        }
+      } catch (e) {
+        throw new AbortError(
+          `failed to ${a.kind} ${rel(this.repo, a.path)}: ${(e as Error).message}\n` +
+          `  ${done.length} file(s) were already changed: ${done.join(", ") || "none"}\n` +
+          (backedUp ? `  Their previous contents are in ${rel(this.repo, this.backupRoot)}/` : "  No backup was needed."));
       }
-      if (a.kind === "write") {
-        fs.mkdirSync(path.dirname(a.path), { recursive: true });
-        fs.writeFileSync(a.path, a.content, "utf8");
-      } else if (exists(a.path)) {
-        fs.rmSync(a.path, { recursive: true, force: true });
-      }
+      done.push(rel(this.repo, a.path));
     }
     return backedUp ? this.backupRoot : null;
   }

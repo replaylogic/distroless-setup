@@ -1,0 +1,15 @@
+[project]
+name = "fixture-django-uv"
+version = "1.0.0"
+description = "Integration fixture: Django (WSGI) with uv-managed dependencies."
+requires-python = ">=3.12"
+dependencies = [
+    "django==5.2.7",
+    "gunicorn==23.0.0",
+    "whitenoise==6.11.0",
+]
+
+[tool.uv]
+# A Django site is an application, not a distributable package: uv installs the
+# dependencies into the environment and never tries to build this project.
+package = false

@@ -9,6 +9,11 @@ const RUNTIME_PY: [number, number] = [3, 13]; // gcr.io/distroless/python3-debia
 const RUNTIME_IMAGE = "gcr.io/distroless/python3-debian13:nonroot";
 const BUILD_IMAGE = "python:3.13-slim-trixie";
 
+/* Uvicorn deprecated its bundled `uvicorn.workers` module in 0.30 and moved the Gunicorn
+   worker to the standalone `uvicorn-worker` distribution. Generate the supported class. */
+const UVICORN_WORKER_PKG = "uvicorn-worker";
+const UVICORN_WORKER_CLASS = "uvicorn_worker.UvicornWorker";
+
 type Pm = "uv" | "poetry" | "pipenv" | "pip" | "pip-project";
 type Fw = "django" | "fastapi" | "flask" | "starlette" | "generic";
 const FW_LABEL: Record<Fw, string> = { django: "Django", fastapi: "FastAPI", flask: "Flask", starlette: "Starlette", generic: "Python" };
@@ -331,22 +336,35 @@ export const pythonStack: Stack = {
       const asgi = fw === "fastapi" || fw === "starlette";
       const servers = asgi ? ["uvicorn", "gunicorn + uvicorn workers", "hypercorn", "granian"] : ["gunicorn", "uvicorn (ASGI)", "waitress", "granian"];
       const installed = (n: string) => has(t, n);
-      const defIdx = asgi ? (installed("uvicorn") ? (installed("gunicorn") ? 1 : 0) : installed("hypercorn") ? 2 : installed("granian") ? 3 : 0)
+      // uvicorn-worker pulls uvicorn in, so a project set up for gunicorn workers may not name uvicorn itself.
+      const defIdx = asgi
+        ? (installed("gunicorn") && (installed("uvicorn") || installed(UVICORN_WORKER_PKG)) ? 1
+          : installed("uvicorn") ? 0 : installed("hypercorn") ? 2 : installed("granian") ? 3 : 0)
         : installed("gunicorn") ? 0 : installed("waitress") ? 2 : installed("granian") ? 3 : 0;
       const srv = servers[await P.choose("Production server", servers, defIdx)];
       serverLabel = srv;
-      const need = srv.startsWith("gunicorn") ? ["gunicorn", ...(srv.includes("uvicorn") ? ["uvicorn"] : [])] : [srv.split(" ")[0]];
+      const need = srv.startsWith("gunicorn") ? ["gunicorn", ...(srv.includes("uvicorn") ? [UVICORN_WORKER_PKG] : [])] : [srv.split(" ")[0]];
       const missing = need.filter((n) => !installed(n));
       if (missing.length) {
         warn(`${missing.join(", ")} ${missing.length > 1 ? "are" : "is"} not in your dependency files`);
         if (await P.confirm(`Install ${missing.join(", ")} in the image anyway (unpinned)?`, true)) extraPkgs.push(...missing);
         actions.push({ short: `Add ${missing.join(", ")} to your dependencies (pinned)`, md: `Add ${missing.map((m) => `\`${m}\``).join(", ")} to your dependency file with a pinned version. ${extraPkgs.length ? "The Dockerfile installs it unpinned for now; remove that line afterwards." : "The image won't start until it's installed."}` });
       }
+      if (srv.startsWith("gunicorn") && srv.includes("uvicorn")) {
+        if (missing.includes(UVICORN_WORKER_PKG))
+          info(`Uvicorn's bundled worker is deprecated; the image uses ${UVICORN_WORKER_CLASS} from the ${UVICORN_WORKER_PKG} package`);
+        const legacy = files.filter((f) => /uvicorn\.workers/.test(readText(f))).map((f) => rel(repo, f));
+        if (legacy.length)
+          actions.push({
+            short: `Drop the deprecated uvicorn.workers reference in ${legacy.slice(0, 3).join(", ")}`,
+            md: `${legacy.map((f) => `\`${f}\``).join(", ")} still reference \`uvicorn.workers\`, which Uvicorn deprecated in 0.30 and will remove. Use \`${UVICORN_WORKER_CLASS}\` from the \`${UVICORN_WORKER_PKG}\` package, as the generated \`ENTRYPOINT\` does.`,
+          });
+      }
       const appTarget = fw === "django" && srv.startsWith("uvicorn") ? target.replace(".wsgi:", ".asgi:") : target;
       if (srv === "uvicorn") { entry = ["-m", "uvicorn", appTarget]; env.push(["UVICORN_HOST", "0.0.0.0"], ["UVICORN_PORT", port]); }
       else if (srv.startsWith("gunicorn")) {
         // Gunicorn binds 0.0.0.0:$PORT by default. /dev/shm: its worker heartbeat needs a writable dir (read-only root).
-        entry = ["-m", "gunicorn", ...(srv.includes("uvicorn") ? ["-k", "uvicorn.workers.UvicornWorker"] : []), "--worker-tmp-dir", "/dev/shm", "--access-logfile", "-", appTarget];
+        entry = ["-m", "gunicorn", ...(srv.includes("uvicorn") ? ["-k", UVICORN_WORKER_CLASS] : []), "--worker-tmp-dir", "/dev/shm", "--access-logfile", "-", appTarget];
       } else if (srv === "uvicorn (ASGI)") { entry = ["-m", "uvicorn", appTarget]; env.push(["UVICORN_HOST", "0.0.0.0"], ["UVICORN_PORT", port]); }
       else if (srv === "hypercorn") entry = ["-m", "hypercorn", "--bind", `0.0.0.0:${port}`, appTarget];
       else if (srv === "waitress") entry = ["-m", "waitress", `--port=${port}`, appTarget];
@@ -418,6 +436,9 @@ export const pythonStack: Stack = {
       "The venv is built against `/usr/bin/python`, the path the distroless image provides, so it runs unchanged there. `ENTRYPOINT` uses exec form: there is no shell, so `$VARS` in it are not expanded. Settings that must change per environment belong in env vars the app reads.", "",
       "- `readOnlyRootFilesystem: true`: Python writes no bytecode (`PYTHONDONTWRITEBYTECODE=1`); mount an `emptyDir` at `/tmp` if the app uses temp files or uploads.",
       ...(serverLabel.startsWith("gunicorn") ? ["- Gunicorn binds `0.0.0.0:$PORT` by default and keeps its worker heartbeat in `/dev/shm`, so it works on a read-only root. Tune workers with `GUNICORN_CMD_ARGS=\"--workers 4\"`."] : []),
+      ...(serverLabel.includes("uvicorn") && serverLabel.startsWith("gunicorn")
+        ? [`- The worker class is \`${UVICORN_WORKER_CLASS}\`, from the standalone \`${UVICORN_WORKER_PKG}\` package. Uvicorn deprecated its bundled \`uvicorn.workers\` module in 0.30 and will remove it, so pin \`${UVICORN_WORKER_PKG}\` in your dependency file rather than relying on \`uvicorn\` alone.`]
+        : []),
       ...(pm === "uv" ? ["- uv never downloads its own Python here (`UV_PYTHON_DOWNLOADS=never`); it installs into `/venv`, created from the runtime-matching interpreter."] : []),
       ].join("\n"),
       ["## Environment variables", "", envs.length ? `Found ${envs.length} variable(s) read through \`os.environ\`, \`os.getenv\`, django-environ or python-decouple:` : "No environment variable reads were found in the scanned sources.", "",
@@ -437,6 +458,9 @@ export const pythonStack: Stack = {
         `${s(G.bullet, "gray")} ${envs.length} env var(s) found${libs.length ? `, ${s(libs.length + " dependency warning(s)", "yellow")}` : ""}`,
       ],
       actions, sections, runEnv: envs.slice(0, 5).map((v) => `-e ${v}=...`), verify: [],
+      // PYTHONDONTWRITEBYTECODE keeps the tree clean; /tmp covers temp files and uploads.
+      // Gunicorn's worker heartbeat lives in /dev/shm, which Docker mounts writable anyway.
+      writablePaths: ["/tmp"],
       dockerignoreRecommended: [".git", ".venv", "venv", "env", "__pycache__", "*.pyc", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".coverage", "htmlcov", ".env", ".env.*", "!.env.example", "*.sqlite3", "node_modules"],
       dockerignoreNeeded: ["pyproject.toml", ...(pm === "uv" ? ["uv.lock"] : pm === "poetry" ? ["poetry.lock"] : pm === "pipenv" ? ["Pipfile", "Pipfile.lock"] : []), ...(reqFile ? [reqFile] : [])].filter((f) => exists(path.join(repo, f))),
       reviewHits: reviewReferences(repo, new Set(), /\bmanage\.py (?:runserver|migrate)\b|\bflask run\b/), healthPath: health,
