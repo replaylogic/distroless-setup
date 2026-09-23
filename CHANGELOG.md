@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- Added beginner-friendly, step-by-step walkthrough guides for every first-class stack
+  (`docs/guides/angular.md`, `react.md`, `node.md`, `python.md`), each following a real
+  fixture project from `npx distroless-setup <stack>` through build/run/verify. Linked from
+  the root README's new "Step-by-step guides" section and from a `docs/guides/README.md`
+  index.
+- Added 20 real terminal screenshots (5 per stack) under `docs/assets/guides/<stack>/`,
+  embedded in the matching guide, generated from the CLI's actual output — never
+  hand-captured — by `docs/recordings/render-screenshots.mjs` (Node + a local headless
+  Chrome/Edge, no extra install). `docs/recordings/*.tape` (VHS scripts) are also included
+  as an animated-recording alternative for contributors with VHS installed.
+- Added optional Buy Me a Coffee funding links (`.github/FUNDING.yml` and a small README
+  section near the bottom, not in the header).
+
 ## 0.3.0
 
 A feature release: static and client-rendered React applications, on the same hardened

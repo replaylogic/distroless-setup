@@ -42,6 +42,13 @@ actually produces.
 | `test/unit.test.js` | Unit tests for parsers, analysis and the change plan |
 | `test/fixtures/` | Small real projects, one per materially different runtime path |
 | `test/integration/` | Docker-backed tests: run the CLI, build the image, run it, probe it |
+| `docs/guides/` | Beginner-friendly, per-stack walkthroughs (see [docs/guides/README.md](docs/guides/README.md)) |
+| `docs/recordings/` | Scripts that reproduce the guides' terminal screenshots from source: `render-screenshots.mjs` (Node + headless Chrome, no extra install — what actually produced the committed screenshots) and VHS `.tape` scripts for an animated alternative |
+
+If you change what a prompt asks, what it defaults to, or what the generated `Dockerfile`
+looks like, check whether the matching `docs/guides/<stack>.md` quotes that prompt or output
+verbatim — if it does, update it and run `node docs/recordings/render-screenshots.mjs` to
+regenerate the matching screenshots too (see that folder's README).
 
 ## Making a change
 
