@@ -13,6 +13,7 @@ Small, real projects used by `test/integration/`. Each one exists because it exe
 | `python-flask-gunicorn` | WSGI, Gunicorn's default sync worker |
 | `python-django-uv` | uv (`uv sync --frozen`), Django WSGI discovery from `manage.py`, `collectstatic` during the build, WhiteNoise serving the result |
 | `angular-spa` | Generated Go static server, AST-rewritten `environment` reads, runtime config from env vars, per-configuration config via `fileReplacements` |
+| `react-vite` | React + Vite + TypeScript with `react-router` client routes: a real `vite build` in the Node stage, the shared Go static server, `VITE_*` compiled in from `--build-arg`, hashed vs unversioned (`public/`) cache policy |
 
 ## The one rule
 

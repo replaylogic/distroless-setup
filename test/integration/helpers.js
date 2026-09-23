@@ -95,8 +95,8 @@ function runCli(stack, dir, extraArgs = []) {
 
 // ---- images and containers ------------------------------------------------------------------
 
-function buildImage(dir, tag) {
-  dockerMust(`docker build ${tag}`, "build", "-t", tag, dir);
+function buildImage(dir, tag, extraArgs = []) {
+  dockerMust(`docker build ${tag}`, "build", "-t", tag, ...extraArgs, dir);
   return tag;
 }
 

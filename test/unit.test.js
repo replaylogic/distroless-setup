@@ -8,9 +8,12 @@ const path = require("node:path");
 const files = require("../dist/core/files");
 const docker = require("../dist/core/docker");
 const an = require("../dist/stacks/angular/analysis");
-const tpl = require("../dist/stacks/angular/templates");
+const spa = require("../dist/stacks/shared/static-spa");
 const node = require("../dist/stacks/node");
 const py = require("../dist/stacks/python");
+const react = require("../dist/stacks/react");
+const ra = require("../dist/stacks/react/analysis");
+const stacks = require("../dist/stacks");
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "dls-"));
 const write = (dir, rel, text) => {
@@ -169,7 +172,7 @@ test("findBootstrapTarget: standalone import, inline config, NgModule", () => {
 });
 
 test("generated Go escapes non-ASCII and quotes", () => {
-  const go = tpl.renderGeneratedGo({ enabled: true, url: "/config.json", fields: [["k", "K", false]], override: null }, [["X-Test", 'a"b – c']]);
+  const go = spa.renderGeneratedGo({ enabled: true, url: "/config.json", fields: [["k", "K", false]], override: null }, [["X-Test", 'a"b – c']]);
   assert.match(go, /\{"X-Test", "a\\"b \\u2013 c"\}/);
   assert.match(go, /\{Key: "k", Env: "K", Raw: false\}/);
 });
@@ -325,4 +328,254 @@ test("back-to-back runs get separate backup directories", () => {
   assert.equal(fs.readFileSync(path.join(b1, "Dockerfile"), "utf8"), "original");
   assert.equal(fs.readFileSync(path.join(b2, "Dockerfile"), "utf8"), "run-1");
   assert.equal(fs.readdirSync(path.join(repo, files.BACKUP_DIR)).length, 2);
+});
+
+// ---- React --------------------------------------------------------------------------------
+const { spawnSync } = require("node:child_process");
+const CLI = path.join(__dirname, "..", "dist", "cli.js");
+
+/** Runs the real CLI with --yes over a temp project: generation tests without Docker. */
+function cli(dir, stack) {
+  const r = spawnSync(process.execPath, [CLI, ...(stack ? [stack] : []), dir, "--yes"], {
+    encoding: "utf8", env: { ...process.env, NO_COLOR: "1", DISTROLESS_SETUP_ASCII: "1", FORCE_COLOR: "" },
+  });
+  const read = (rel) => (fs.existsSync(path.join(dir, rel)) ? fs.readFileSync(path.join(dir, rel), "utf8") : null);
+  return { code: r.status, out: r.stdout + r.stderr, read };
+}
+
+/** A temp project from a { path: content } map; objects are written as JSON. */
+function project(filesMap) {
+  const d = tmp();
+  for (const [rel, body] of Object.entries(filesMap)) write(d, rel, typeof body === "string" ? body : JSON.stringify(body));
+  return d;
+}
+
+const VITE_PKG = { name: "web", scripts: { dev: "vite", build: "tsc && vite build", preview: "vite preview" },
+  dependencies: { react: "19", "react-dom": "19" }, devDependencies: { vite: "8", "@vitejs/plugin-react": "6" } };
+const CRA_PKG = { name: "cra-app", scripts: { start: "react-scripts start", build: "react-scripts build" },
+  dependencies: { react: "18", "react-dom": "18", "react-scripts": "5.0.1" } };
+const RR_PKG = { name: "rr-app", scripts: { build: "react-router build", dev: "react-router dev", start: "react-router-serve ./build/server/index.js" },
+  dependencies: { react: "19", "react-dom": "19", "react-router": "7", "@react-router/node": "7", "@react-router/serve": "7" }, devDependencies: { "@react-router/dev": "7", vite: "7" } };
+
+const winner = (d) => stacks.detectStacks(d)[0]?.st.id ?? null;
+const reactScore = (d) => react.reactStack.detect(d)?.score ?? null;
+
+test("detection competition: static React apps pick React, servers and Next.js keep Node", () => {
+  const cases = [
+    ["React + Vite", { "package.json": VITE_PKG, "index.html": "<div id=root></div>" }, "react"],
+    ["React + Vite served by `serve` in start", { "package.json": { ...VITE_PKG, scripts: { ...VITE_PKG.scripts, start: "serve -s dist" } } }, "react"],
+    ["React + CRA", { "package.json": CRA_PKG, "public/index.html": "<div id=root></div>" }, "react"],
+    ["React Router ssr:false", { "package.json": RR_PKG, "react-router.config.ts": "export default { ssr: false } satisfies Config;" }, "react"],
+    ["React Router with SSR (default)", { "package.json": RR_PKG, "react-router.config.ts": "export default { appDirectory: 'app' };" }, "node"],
+    ["Next.js + React", { "package.json": { scripts: { build: "next build", start: "next start" }, dependencies: { next: "15", react: "19", "react-dom": "19" } } }, "node"],
+    ["Angular", { "angular.json": "{}", "package.json": { dependencies: { "@angular/core": "20" } } }, "angular"],
+    ["Express + React rendered server-side", { "package.json": { scripts: { build: "tsc", start: "node dist/server.js" }, dependencies: { express: "5", react: "19", "react-dom": "19" } } }, "node"],
+    ["Express + Vite + React (SSR dev setup)", { "package.json": { ...VITE_PKG, scripts: { ...VITE_PKG.scripts, start: "node server.js" }, dependencies: { ...VITE_PKG.dependencies, express: "5" } } }, "node"],
+    ["plain Node package", { "package.json": { scripts: { start: "node index.js" }, dependencies: { pino: "9" } } }, "node"],
+    ["Vite without React", { "package.json": { scripts: { build: "vite build" }, devDependencies: { vite: "8" } } }, "node"],
+    ["unknown React builder", { "package.json": { scripts: { build: "webpack --mode production" }, dependencies: { react: "19", "react-dom": "19" }, devDependencies: { webpack: "5" } }, "public/index.html": "<div></div>" }, "react"],
+  ];
+  for (const [name, filesMap, want] of cases) assert.equal(winner(project(filesMap)), want, name);
+});
+
+test("React detection: evidence and exclusions", () => {
+  assert.equal(reactScore(project({ "package.json": { dependencies: { pino: "9" } } })), null, "no React evidence");
+  assert.equal(reactScore(project({ "package.json": { scripts: { build: "vite build" }, devDependencies: { vite: "8" } } })), null, "Vite alone is not React");
+  assert.equal(reactScore(project({ "package.json": { dependencies: { react: "19" } } })), null, "React dependency alone, no build or entry point");
+  assert.equal(reactScore(project({ "package.json": { scripts: { build: "tsc" }, dependencies: { react: "19" } } })), null, "no index.html: no frontend evidence");
+  assert.equal(reactScore(project({ "package.json": { dependencies: { next: "15", react: "19" } } })), null, "Next.js is the node stack's");
+  assert.equal(reactScore(project({ "package.json": { dependencies: { "@remix-run/react": "2", react: "18" } } })), null, "Remix is not claimed");
+  assert.equal(reactScore(project({ "package.json": { dependencies: { gatsby: "5", react: "18" } } })), null, "Gatsby is not claimed");
+  assert.equal(reactScore(project({ "angular.json": "{}", "package.json": VITE_PKG })), null, "Angular workspace");
+  assert.equal(reactScore(project({ "package.json": { dependencies: { react: "19" } }, "vite.config.mts": "export default {}" })), 0.95, "vite.config.mts is Vite evidence");
+  assert.equal(reactScore(project({ "package.json": { scripts: { build: "vite build" }, dependencies: { react: "19" } } })), 0.95, "`vite build` script is Vite evidence");
+  assert.equal(reactScore(project({ "package.json": RR_PKG })), 0.4, "React Router without a config defaults to SSR");
+  // Node's own detection is unchanged by the React stack: a CRA app still scores as before.
+  assert.equal(node.nodeStack.detect(project({ "package.json": CRA_PKG })).score, 0.9);
+});
+
+test("React Router config: only a literal ssr: false counts as SPA mode", () => {
+  const rr = (cfg) => ra.reactRouterSettings(project(cfg === null ? {} : { "react-router.config.ts": cfg }));
+  assert.equal(rr("import type { Config } from '@react-router/dev/config';\nexport default { ssr: false } satisfies Config;\n").ssr, false);
+  assert.equal(rr("export default { ssr: true };").ssr, true);
+  assert.equal(rr("export default { appDirectory: 'app' };").ssr, "default");
+  assert.equal(rr(null).ssr, "default");
+  assert.equal(rr("export default { // ssr: false\n  appDirectory: 'app' };").ssr, "default", "a comment is not config");
+  assert.equal(rr("export default { ssr: process.env.SPA !== '1' };").ssr, "dynamic");
+  assert.equal(rr("const spa = true;\nexport default { ssr: !spa };").ssr, "dynamic");
+  assert.equal(rr("export default process.env.X ? { ssr: false } : { ssr: true };").ssr, "dynamic", "different literals per branch");
+  assert.equal(rr("export default { ssr: false };").outDir, "build/client");
+  assert.equal(rr("export default { ssr: false, buildDirectory: 'out' };").outDir, "out/client");
+  const full = rr("export default { ssr: false, basename: '/app', prerender: ['/about'] };");
+  assert.equal(full.basename, "/app");
+  assert.equal(full.prerender, true);
+});
+
+test("Vite config: outDir/root/base read statically, dynamic values reported, plugin options ignored", () => {
+  const vite = (cfg, scripts = {}) => ra.viteSettings(project(cfg === null ? {} : { "vite.config.ts": cfg }), { scripts });
+  assert.equal(vite(null).outDir, "dist");
+  assert.equal(vite("export default defineConfig({ plugins: [react()] });").outDir, "dist");
+  assert.equal(vite("export default defineConfig({ build: { outDir: 'build/web' } });").outDir, "build/web");
+  assert.equal(vite("export default defineConfig({ root: 'client', build: { outDir: '../www' } });").outDir, "www");
+  assert.equal(vite("export default defineConfig(({ mode }) => ({ build: { outDir: `out` } }));").outDir, "out");
+  assert.equal(vite("export default defineConfig({ plugins: [pwa({ build: { outDir: 'nope' } }), x({ outDir: 'nope' })] });").outDir, "dist", "plugin options are not Vite's build.outDir");
+  const dyn = vite("export default defineConfig({ build: { outDir: process.env.OUT } });");
+  assert.equal(dyn.outDir, null);
+  assert.match(dyn.notes.join(), /outDir/);
+  assert.equal(vite("export default defineConfig({ build: { outDir: '/abs/out' } });").outDir, null);
+  assert.equal(vite("export default defineConfig({ build: { outDir: '..' } });").outDir, null, "outside the repo");
+  assert.equal(vite(null, { build: "vite build --outDir public-build" }).outDir, "public-build", "CLI flag wins");
+  assert.equal(vite("export default defineConfig({ base: '/admin/' });").base, "/admin/");
+  assert.equal(vite("export default defineConfig({ envPrefix: 'APP_' });").envPrefix, "APP_");
+});
+
+test("base path from Vite base, CRA homepage and React Router basename", () => {
+  const vite = (base) => ({ base, outDir: "dist", envPrefix: null, notes: [], file: null });
+  assert.deepEqual(ra.basePath("vite", {}, vite("/admin/"), null), { value: "/admin/", source: "`base` in the Vite config" });
+  assert.equal(ra.basePath("vite", {}, vite("./"), null), null, "relative base works from any path");
+  assert.equal(ra.basePath("vite", {}, vite("/"), null), null);
+  assert.equal(ra.basePath("cra", { homepage: "https://user.github.io/my-app" }, null, null).value, "/my-app/");
+  assert.equal(ra.basePath("cra", { homepage: "." }, null, null), null);
+  assert.equal(ra.basePath("react-router", {}, vite(null), { basename: "/app" }).value, "/app/");
+});
+
+test("client env scan: Vite and CRA forms, built-ins excluded, unprefixed and credential-like names flagged", () => {
+  const d = project({
+    "src/a.ts": [
+      "const u = import.meta.env.VITE_API_URL;",
+      "const k = import.meta.env['VITE_STRIPE_SECRET_KEY'];",
+      "const m = import.meta.env?.VITE_OPTIONAL;",
+      "const { VITE_A, VITE_B: b, MODE } = import.meta.env;",
+      "if (import.meta.env.PROD && import.meta.env.DEV === false && import.meta.env.BASE_URL && import.meta.env.SSR) {}",
+      "const bad = import.meta.env.API_URL;",
+    ].join("\n"),
+    "src/b.js": "fetch(process.env.REACT_APP_API_URL); const t = process.env[\"REACT_APP_AUTH_TOKEN\"]; const { REACT_APP_C } = process.env; process.env.NODE_ENV;",
+    "index.html": "<title>%VITE_APP_TITLE%</title>",
+    "public/index.html": "<title>%REACT_APP_NAME%</title>",
+    "src/a.test.ts": "import.meta.env.VITE_ONLY_IN_TESTS",
+    "vite.config.ts": "process.env.VITE_ONLY_IN_CONFIG; import.meta.env.VITE_ONLY_IN_CONFIG",
+  });
+  const r = ra.scanClientEnv(d, ra.clientFiles(d, []));
+  assert.deepEqual(r.vars.map((v) => v.name), ["REACT_APP_API_URL", "REACT_APP_AUTH_TOKEN", "REACT_APP_C", "REACT_APP_NAME",
+    "VITE_A", "VITE_API_URL", "VITE_APP_TITLE", "VITE_B", "VITE_OPTIONAL", "VITE_STRIPE_SECRET_KEY"]);
+  assert.deepEqual(r.unprefixed, ["API_URL"], "Vite built-ins are not application variables");
+  assert.deepEqual(r.vars.filter((v) => v.secretish).map((v) => v.name), ["REACT_APP_AUTH_TOKEN", "VITE_STRIPE_SECRET_KEY"]);
+  assert.equal(r.vars.find((v) => v.name === "VITE_API_URL").where, "src/a.ts:1");
+  assert.equal(r.vars.find((v) => v.name === "REACT_APP_API_URL").kind, "cra");
+});
+
+test("existing nginx Dockerfile: the COPY into /usr/share/nginx/html gives the output directory", () => {
+  const d = tmp();
+  const f = write(d, "Dockerfile", "FROM node:20 AS build\nWORKDIR /usr/src/app\nRUN npm ci && npm run build\nFROM nginx:alpine\nCOPY --from=build /usr/src/app/web-dist/ /usr/share/nginx/html\n");
+  assert.equal(react.nginxCopySource(f), "web-dist");
+  write(d, "Dockerfile", "FROM nginx\nCOPY --from=0 /etc/passwd /usr/share/nginx/html\n");
+  assert.equal(react.nginxCopySource(f), null, "absolute paths outside the workdir are not an output directory");
+});
+
+test("react generation: Vite app gets a 3-stage static image, build ARGs and a hardened .dockerignore", () => {
+  const d = project({ "package.json": VITE_PKG, "package-lock.json": "{}", "index.html": "<title>%VITE_APP_TITLE%</title>",
+    "src/main.tsx": "console.log(import.meta.env.VITE_API_URL)", ".env.production": "VITE_API_URL=https://prod", ".env.example": "" });
+  const r = cli(d);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /React \+ Vite/);
+  const df = r.read("Dockerfile");
+  assert.match(df, /^FROM node:24-trixie-slim AS build$/m);
+  assert.match(df, /^ARG VITE_API_URL\nARG VITE_APP_TITLE\nRUN npm run build$/m);
+  assert.match(df, /^COPY --from=build --chown=65532:0 \/app\/dist \/app\/www$/m);
+  assert.match(df, /^FROM gcr\.io\/distroless\/static-debian13:nonroot AS serve$/m);
+  assert.match(df, /^USER 65532:0$/m);
+  assert.doesNotMatch(df.slice(df.indexOf("AS serve")), /node_modules/);
+  assert.ok(r.read("server/main.go").includes("func isHashedName"));
+  assert.match(r.read("server/zz_generated_config.go"), /const configURLPath = ""/, "no runtime config for React");
+  assert.deepEqual(r.read(".dockerignore").trim().split("\n"), ["node_modules", "dist", ".git", "coverage", ".env", ".env.*", "!.env.example", "*.pem", "*.key", ".distroless-backup"]);
+  const rep = r.read("DISTROLESS-MIGRATION.md");
+  assert.match(rep, /Setting `VITE_\*` on the running container does not change an already-built browser bundle\./);
+  assert.match(rep, /`\.env\.production` is excluded from the build context/);
+  assert.match(rep, /`vite preview` is a local preview server and is not used/);
+  assert.match(rep, /writes nothing to disk at runtime/);
+});
+
+test("react generation: Create React App uses build/, REACT_APP_ analysis and the deprecation note", () => {
+  const d = project({ "package.json": { ...CRA_PKG, homepage: "/portal" }, "yarn.lock": "", "public/index.html": "<title>%REACT_APP_NAME%</title>",
+    "src/index.js": "const api = process.env.REACT_APP_API_URL;\nconst k = process.env.REACT_APP_SECRET_KEY;" });
+  const r = cli(d, "react");
+  assert.equal(r.code, 0, r.out);
+  const df = r.read("Dockerfile");
+  assert.match(df, /^RUN yarn install --frozen-lockfile$/m, "package manager detection is shared");
+  assert.match(df, /^ARG REACT_APP_API_URL\nARG REACT_APP_NAME\nARG REACT_APP_SECRET_KEY\nRUN yarn run build$/m);
+  assert.match(df, /\/app\/build \/app\/www$/m);
+  const rep = r.read("DISTROLESS-MIGRATION.md");
+  assert.match(rep, /Create React App is deprecated upstream/);
+  assert.match(rep, /\| `REACT_APP_API_URL` \| CRA `REACT_APP_\*` \| `src\/index\.js:1` \|/);
+  assert.match(rep, /1\. Move `REACT_APP_SECRET_KEY` out of the client build/, "credential-like variables come first");
+  assert.match(rep, /## Base path[\s\S]*built for `\/portal\/` \(`homepage` in package\.json\)/);
+  assert.match(rep, /Ingress strips the prefix/);
+});
+
+test("react generation: React Router ssr:false serves build/client; SSR aborts without writing", () => {
+  const spa = project({ "package.json": RR_PKG, "package-lock.json": "{}", "react-router.config.ts": "export default { ssr: false };" });
+  const ok = cli(spa, "react");
+  assert.equal(ok.code, 0, ok.out);
+  assert.match(ok.read("Dockerfile"), /^RUN npm run build$/m);
+  assert.match(ok.read("Dockerfile"), /\/app\/build\/client \/app\/www$/m);
+  assert.deepEqual(ok.read(".dockerignore").trim().split("\n").slice(0, 3), ["node_modules", "build", ".react-router"]);
+
+  for (const cfg of [null, "export default { ssr: true };", "export default { ssr: process.env.SSR === '1' };"]) {
+    const d = project({ "package.json": RR_PKG, ...(cfg ? { "react-router.config.ts": cfg } : {}) });
+    const r = cli(d, "react");
+    assert.equal(r.code, 1, `SSR config ${cfg} must not be served as static:\n${r.out}`);
+    assert.match(r.out, /does not run React Router SSR/);
+    assert.match(r.out, /set `ssr: false`/);
+    assert.equal(r.read("Dockerfile"), null, "nothing is written when aborting");
+  }
+});
+
+test("react generation: unknown builder uses the build script and an overridable output guess", () => {
+  const pkg = { name: "wp", scripts: { build: "webpack --mode production" }, dependencies: { react: "19", "react-dom": "19" } };
+  const d = project({ "package.json": pkg, "pnpm-lock.yaml": "", "public/index.html": "" });
+  const r = cli(d);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.read("Dockerfile"), /^RUN pnpm run build$/m);
+  assert.match(r.read("Dockerfile"), /\/app\/dist \/app\/www$/m);
+  assert.doesNotMatch(r.out, /Vite/, "an unknown builder is never labelled Vite");
+  assert.match(r.read("DISTROLESS-MIGRATION.md"), /was not read from your build configuration/);
+
+  // An existing nginx Dockerfile tells us where the build output really is.
+  const n = project({ "package.json": pkg, "public/index.html": "",
+    Dockerfile: "FROM node:20 AS build\nWORKDIR /app\nRUN npm ci\nCOPY . .\nRUN npm run build\nFROM nginx:1.27\nCOPY --from=build /app/web /usr/share/nginx/html\nEXPOSE 80\n" });
+  const rn = cli(n);
+  assert.equal(rn.code, 0, rn.out);
+  assert.match(rn.read("Dockerfile"), /^FROM node:20-trixie-slim AS build$/m, "node major from the old Dockerfile");
+  assert.match(rn.read("Dockerfile"), /\/app\/web \/app\/www$/m);
+  assert.match(rn.read("Dockerfile"), /^EXPOSE 8080$/m, "privileged port 80 becomes 8080");
+});
+
+test("react generation: nginx headers carried over, non-trivial nginx kept and reported", () => {
+  const d = project({ "package.json": VITE_PKG, "index.html": "",
+    "nginx.conf": "server {\n  listen 8081;\n  add_header X-Frame-Options DENY;\n  add_header Content-Security-Policy \"default-src 'self'\";\n  location / { try_files $uri /index.html; }\n  location /admin { auth_basic \"x\"; }\n}\n",
+    "docker-entrypoint.sh": "#!/bin/sh\nenvsubst < /usr/share/nginx/html/env.tpl.js > /usr/share/nginx/html/env.js\nexec nginx -g 'daemon off;'\n" });
+  const r = cli(d);
+  assert.equal(r.code, 0, r.out);
+  const go = r.read("server/zz_generated_config.go");
+  assert.match(go, /\{"X-Frame-Options", "DENY"\}/);
+  assert.match(go, /\{"Content-Security-Policy", "default-src 'self'"\}/);
+  assert.match(r.read("Dockerfile"), /^EXPOSE 8081$/m, "nginx listen port reused");
+  assert.ok(r.read("nginx.conf"), "nginx.conf with auth_basic is left in place by default");
+  const rep = r.read("DISTROLESS-MIGRATION.md");
+  assert.match(rep, /## Replaced nginx setup/);
+  assert.match(rep, /nginx\.conf: uses 'auth_basic'/);
+  assert.match(rep, /start-up file rewriting/);
+
+  const proxy = project({ "package.json": VITE_PKG, "nginx.conf": "server { location /api { proxy_pass http://api:3000; } }" });
+  const rp = cli(proxy);
+  assert.equal(rp.code, 1, "proxy_pass can't be served statically: --yes aborts");
+  assert.match(rp.out, /does NOT proxy/);
+});
+
+test("react stack refuses Next.js explicitly and points at the node stack", () => {
+  const d = project({ "package.json": { dependencies: { next: "15", react: "19", "react-dom": "19" } } });
+  const r = cli(d, "react");
+  assert.equal(r.code, 1);
+  assert.match(r.out, /Next\.js is handled by the node stack/);
+  assert.equal(r.read("Dockerfile"), null);
 });
