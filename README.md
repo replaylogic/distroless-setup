@@ -22,6 +22,21 @@ It looks at your repo, asks a few questions (every one has a sensible default), 
 | **Node.js** — Express, NestJS, Next.js, Fastify, plain Node/TypeScript | A Debian build stage (install, build, drop dev dependencies) and a `distroless/nodejs` runtime. Next.js uses `output: 'standalone'`. |
 | **Python** — FastAPI, Flask, Django, plain scripts; pip, uv, Poetry, Pipenv | A virtualenv built against the runtime's own Python, copied into `distroless/python3`, served by uvicorn / gunicorn (with `uvicorn-worker` for ASGI) / hypercorn / granian / waitress. |
 
+## Step-by-step guides
+
+New to distroless containers, or not sure what one of the CLI's questions means? Each guide
+walks a real project through the whole flow: running the tool, understanding every prompt,
+and building/running/verifying the resulting image.
+
+- [Angular walkthrough](docs/guides/angular.md)
+- [React walkthrough](docs/guides/react.md)
+- [Node.js walkthrough](docs/guides/node.md)
+- [Python walkthrough](docs/guides/python.md)
+
+Each guide explains the CLI prompts, generated files, local build/run verification, and the
+important container concepts in plain language. This README stays the reference; the guides
+are the tutorial. See the [guide index](docs/guides/README.md) for more on the difference.
+
 ## Usage
 
 There are two ways to point it at a project — pick whichever fits, they're not sequential steps:
@@ -324,6 +339,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Releases are documented in [RELEASING.md
 ## Security
 
 See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
+
+## Support this project
+
+distroless-setup is free and MIT-licensed. If it saved you some time, a coffee is always
+appreciated, entirely optionally: [buymeacoffee.com/replaylogic](https://buymeacoffee.com/replaylogic).
 
 ## License
 
