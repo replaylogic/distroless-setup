@@ -38,7 +38,7 @@ actually produces.
 |---|---|
 | `src/cli.ts` | Entry point: argument parsing, stack selection, top-level flow |
 | `src/core/` | Shared plumbing — file planning, diffing/backups, the prompter, report rendering |
-| `src/stacks/` | One module per stack (`angular`, `node`, `python`) — detection, Dockerfile generation, stack-specific checks |
+| `src/stacks/` | One module per stack (`angular`, `react`, `node`, `python`) — detection, Dockerfile generation, stack-specific checks. `src/stacks/shared/static-spa/` holds the Go static server and the questions the Angular and React stacks share; `src/stacks/index.ts` is the registry |
 | `test/unit.test.js` | Unit tests for parsers, analysis and the change plan |
 | `test/fixtures/` | Small real projects, one per materially different runtime path |
 | `test/integration/` | Docker-backed tests: run the CLI, build the image, run it, probe it |

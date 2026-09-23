@@ -28,7 +28,7 @@ We aim to acknowledge reports within 5 business days.
 ## What's in scope
 
 - The CLI itself: how it detects, plans, and writes files.
-- Generated artifacts: Dockerfiles, the Angular static server (`server/main.go`), health
+- Generated artifacts: Dockerfiles, the static server shared by the Angular and React stacks (`server/main.go`), health
   checks, and any runtime-config code it writes.
 - Supply-chain issues in `distroless-setup`'s own dependencies.
 

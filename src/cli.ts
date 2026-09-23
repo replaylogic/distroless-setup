@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* distroless-setup: move Angular, Node.js and Python apps to distroless images. */
+/* distroless-setup: move Angular, React, Node.js and Python apps to distroless images. */
 import * as fs from "fs";
 import * as path from "path";
 import { planDockerignore } from "./core/docker";
@@ -7,22 +7,20 @@ import { BACKUP_DIR, Plan, exists, readText, rel } from "./core/files";
 import { Prompter } from "./core/prompt";
 import { REPORT_NAME, Stack, TOOL, VERSION, printSummary, renderReport } from "./core/report";
 import { AbortError, G, banner, info, line, s, section } from "./core/ui";
-import { angularStack } from "./stacks/angular";
-import { nodeStack } from "./stacks/node";
-import { pythonStack } from "./stacks/python";
-
-const STACKS: Stack[] = [angularStack, nodeStack, pythonStack];
+import { STACKS, detectStacks } from "./stacks";
 
 const HELP = `${s(TOOL, "bold")} v${VERSION}: move an app to a distroless container image.
 
 ${s("Usage", "bold")}
-  npx ${TOOL} [angular|node|python] [path] [options]
+  npx ${TOOL} [angular|react|node|python] [path] [options]
 
   With no stack name, the project type is detected and you confirm it.
 
 ${s("Stacks", "bold")}
   angular   Angular 19+ SPA: static Go server on distroless/static, optional
             runtime config.json driven by env vars (no rebuild to change it)
+  react     Static/client-rendered React: Vite, React Router in SPA mode
+            (ssr: false), Create React App; static Go server on distroless/static
   node      Node.js / TypeScript services: Express, NestJS, Next.js (standalone)
   python    Python services: FastAPI, Flask, Django or a plain script
             (pip, uv, Poetry, Pipenv)
@@ -60,12 +58,12 @@ function parseArgs(argv: string[]): Args | null {
 }
 
 async function pickStack(repo: string, P: Prompter): Promise<Stack> {
-  const found = STACKS.map((st) => ({ st, d: st.detect(repo) })).filter((x) => x.d).sort((a, b) => b.d!.score - a.d!.score);
+  const found = detectStacks(repo);
   if (!found.length)
-    throw new AbortError(`couldn't tell what kind of project ${repo} is (no angular.json, package.json or Python project files). Pass the stack explicitly: npx ${TOOL} <angular|node|python> [path]`);
-  const opts = found.map(({ st, d }) => `${st.title}  ${s("(" + d!.reason + ")", "gray")}`);
+    throw new AbortError(`couldn't tell what kind of project ${repo} is (no angular.json, package.json or Python project files). Pass the stack explicitly: npx ${TOOL} <${STACKS.map((st) => st.id).join("|")}> [path]`);
+  const opts = found.map(({ st, d }) => `${st.title}  ${s("(" + d.reason + ")", "gray")}`);
   if (found.length === 1) {
-    info(`detected: ${s(found[0].st.title, "bold")} ${s("(" + found[0].d!.reason + ")", "gray")}`);
+    info(`detected: ${s(found[0].st.title, "bold")} ${s("(" + found[0].d.reason + ")", "gray")}`);
     if (!(await P.confirm(`Set up a distroless image for this ${found[0].st.title} project?`, true))) throw new AbortError("aborted: no files changed");
     return found[0].st;
   }
@@ -79,7 +77,7 @@ async function main() {
   if (!fs.existsSync(repo) || !fs.statSync(repo).isDirectory()) throw new AbortError(`${repo} is not a directory`);
   const P = new Prompter(args.yes);
   try {
-    banner(`${TOOL} v${VERSION}`, "distroless images for Angular, Node.js and Python");
+    banner(`${TOOL} v${VERSION}`, "distroless images for Angular, React, Node.js and Python");
     line(`  ${s("repo", "gray")} ${repo}` + (args.dryRun ? `   ${s("[dry run]", "yellow")}` : ""));
     const stack = args.stack ?? (section("Project type"), await pickStack(repo, P));
     const plan = new Plan(repo);

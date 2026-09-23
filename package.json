@@ -1,8 +1,8 @@
 {
   "name": "distroless-setup",
-  "version": "0.2.0",
-  "description": "Move Angular, Node.js (Express, NestJS, Next.js) and Python (FastAPI, Flask, Django) apps to distroless container images. Interactive, shows a plan, backs up every file it touches, and writes a migration report.",
-  "keywords": ["distroless", "docker", "dockerfile", "container", "security", "angular", "nodejs", "nextjs", "nestjs", "express", "python", "fastapi", "django", "flask", "cli"],
+  "version": "0.3.0",
+  "description": "Move Angular, React (Vite, React Router SPA, Create React App), Node.js (Express, NestJS, Next.js) and Python (FastAPI, Flask, Django) apps to distroless container images. Interactive, shows a plan, backs up every file it touches, and writes a migration report.",
+  "keywords": ["distroless", "docker", "dockerfile", "container", "security", "angular", "react", "vite", "spa", "nodejs", "nextjs", "nestjs", "express", "python", "fastapi", "django", "flask", "cli"],
   "license": "MIT",
   "author": "The distroless-setup contributors",
   "repository": {

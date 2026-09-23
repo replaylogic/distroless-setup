@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.3.0
+
+A feature release: static and client-rendered React applications, on the same hardened
+static runtime the Angular stack already uses. SSR React frameworks are not supported.
+
+### React stack (`npx distroless-setup react`)
+
+- New `react` stack for apps whose production build is a folder with `index.html` and
+  static assets. The image is a Node build stage, the Go static server, and
+  `gcr.io/distroless/static-debian13:nonroot`: no Node.js, no `node_modules`, no shell,
+  UID `65532` / GID `0`, read-only root, `/healthz`, graceful SIGTERM.
+- **React + Vite** is the primary path. It is detected from a `vite` dependency, a
+  `vite.config.*` file or a `vite build` script. `build.outDir`, `root` and `base` are read
+  from the config's syntax tree without running it. If a value isn't a literal, the tool
+  asks.
+- **React Router framework, SPA mode:** `ssr: false` in `react-router.config.*` is served
+  from `build/client`. If `ssr` is true, missing (React Router defaults to SSR) or dynamic,
+  the tool explains why and aborts unless you confirm the client output is a complete
+  static build.
+- **Create React App:** a compatibility path for existing apps (`build/`). CRA is
+  deprecated upstream and is documented as such.
+- **Other React builders:** a generic path. It runs the `build` script and asks for the
+  output directory, defaulting to `dist` or to the folder an existing nginx Dockerfile
+  copied. It is never labelled as Vite.
+- **Detection:** the stack needs React evidence. Vite alone isn't enough, and neither is a
+  `react` dependency without a build and an `index.html`. Next.js stays with the Node stack
+  and Angular workspaces stay with Angular. Remix and Gatsby are not claimed. React next to
+  Express, Fastify, Koa, Hono or NestJS defers to Node. The Node stack's own detection is
+  unchanged.
+- **Client build-time variables:** the stack finds `import.meta.env.VITE_*` (dot, bracket
+  and destructuring forms, plus `%VITE_*%` in `index.html`) and `process.env.REACT_APP_*`.
+  The report states they are compiled into public JavaScript, so setting them on a running
+  container does nothing. The Dockerfile declares an `ARG` for each one so
+  `--build-arg` works. Names that look like credentials are the first action item. Vite
+  built-ins (`MODE`, `BASE_URL`, `PROD`, `DEV`, `SSR`) are excluded.
+- **Build context:** the `.dockerignore` uses Angular's hardening (`.env`, `.env.*`,
+  `!.env.example`, `*.pem`) plus `*.key`. `.env` files the bundler would have read are
+  listed in the report with the `--build-arg` alternative.
+- **Base paths:** Vite `base`, CRA `homepage` and React Router `basename` are reported,
+  never rewritten. The report says the ingress must strip the prefix.
+- **Existing nginx setups:** `add_header` security headers are carried over, the `listen`
+  / `EXPOSE` port is reused if it isn't privileged, and `try_files ... /index.html` is
+  recognised. `proxy_pass` aborts under `--yes`. Other directives (auth, rewrites, TLS,
+  `return`, `sub_filter`, rate limits) and `envsubst`/`sed` entrypoints are listed in the
+  report. The nginx files are removed by default only when nothing like that was found.
+
+### Shared static-SPA runtime
+
+- The Go server, its generated config, the Dockerfile server and runtime stages, nginx
+  analysis, and the header, port and server-directory questions moved from the Angular
+  stack to `src/stacks/shared/static-spa/`. For the Angular fixture, every generated file
+  and prompt is identical to 0.2.0 except the server's `main.go` (see below) and the
+  version stamp.
+
+### Fixed: year-long caching of unversioned assets
+
+- The static server sent `Cache-Control: public, max-age=31536000, immutable` for every
+  file with a static-asset extension, whether or not its name was content-hashed. For
+  example, `favicon.ico` and `logo.svg` could be pinned in browsers for a year. Now only
+  content-hashed names are immutable: Vite/Rollup/Rolldown and esbuild (Angular)
+  `name-HASH.ext`, and webpack/CRA `name.HASH[.chunk].ext`. Other assets get `no-cache`
+  and are revalidated. Missing assets are still a 404, never the SPA fallback. Angular
+  images pick up the fix when the tool is re-run.
+
+### Tests
+
+- New `react-vite` integration fixture: React 19 + Vite 8 + TypeScript with
+  `react-router` client routes, a real `vite build` inside `docker build`, and a lockfile.
+  The container is checked for the build arg compiled into `index.html` and the bundle, a
+  runtime env var having no effect, `.env.local` not reaching the build, deep routes,
+  immutable hashed JS/CSS, a revalidated `favicon.svg`, a 404 for a missing hashed bundle,
+  gzip, HEAD/405, security headers, uid/gid, forbidden binaries, health, `--read-only`
+  and a clean SIGTERM exit.
+- Go behaviour tests for the shared server (`test/static-server/`). They run in the
+  integration suite with a local Go toolchain or the `golang` image, and cover the hashed
+  name heuristic against Vite, Angular and CRA names, the cache policy, SPA fallback,
+  404s, HEAD, 405, gzip, headers, path traversal and runtime config.
+- Unit and generation tests (the real CLI with `--yes`, no Docker) for detection
+  competition, React Router `ssr` parsing, Vite config parsing, client variable analysis,
+  base paths, Create React App, generic builders, nginx migration and refusing Next.js.
+
 ## 0.2.0
 
 A trust-and-reliability release. No new stacks, frameworks or capabilities: the point is
