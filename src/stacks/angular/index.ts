@@ -676,8 +676,12 @@ export const angularStack: Stack = {
       runEnv: rc.enabled && rc.fields.length ? ["-e USE_RUNTIME_CONFIG=true", ...rc.fields.slice(0, 6).map(([, e]) => `-e ${e}=...`)] : [],
       verify: [`curl -s  http://localhost:${port}${rc.url}`, `curl -sI http://localhost:${port}/some/deep/route    # 200, SPA fallback`,
         `curl -sI -H 'Accept-Encoding: gzip' http://localhost:${port}/   # Content-Encoding: gzip`],
-      dockerignoreRecommended: ["node_modules", "dist", ".angular", ".git", "coverage"], dockerignoreNeeded: needed,
+      // The build stage does `COPY . .`, so local secrets must be kept out of the build context.
+      dockerignoreRecommended: ["node_modules", "dist", ".angular", ".git", "coverage", ".env", ".env.*", "!.env.example", "*.pem"],
+      dockerignoreNeeded: needed,
       reviewHits: reviewReferences(repo, new Set(candidates)), healthPath: "/healthz",
+      // The Go server renders the config in memory and pre-compresses into memory.
+      writablePaths: [],
     };
   },
 };

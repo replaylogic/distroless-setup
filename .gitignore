@@ -2,3 +2,13 @@ node_modules/
 dist/
 *.tgz
 .distroless-backup/
+# Fixture build output, if a maintainer runs a fixture's own toolchain locally.
+test/fixtures/**/node_modules/
+test/fixtures/**/.angular/
+test/fixtures/**/out-tsc/
+test/fixtures/**/.venv/
+test/fixtures/**/__pycache__/
+test/fixtures/**/staticfiles/
+test/fixtures/**/Dockerfile
+test/fixtures/**/.dockerignore
+test/fixtures/**/DISTROLESS-MIGRATION.md

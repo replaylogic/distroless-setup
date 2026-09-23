@@ -5,20 +5,52 @@ on:
 
 permissions:
   contents: read
-  id-token: write # npm provenance
+  id-token: write # OIDC token for npm trusted publishing (and provenance)
+
+# Third-party actions are pinned to full commit SHAs; the trailing comment is the
+# human-readable version. See CONTRIBUTING.md before changing one.
+#
+# Publishing uses npm trusted publishing (OIDC): there is no npm token in this
+# workflow. The npm-side half of that setup is described in RELEASING.md and can
+# only be done by the package owner on npmjs.com.
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # setup-node MUST stay on the v7 line. Up to and including v6 it exported a
+      # placeholder NODE_AUTH_TOKEN even when no token was configured; npm then saw
+      # auth as already configured, skipped the OIDC exchange, and publishing failed
+      # with a 404 (actions/setup-node#1440, fixed by #1558, shipped on v7 only).
+      # v7 exports NODE_AUTH_TOKEN only when the user actually sets it, which is why
+      # `registry-url` below is safe here without a token.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+          # A release build must resolve dependencies from the registry, not from a
+          # cache another workflow run populated.
+          package-manager-cache: false
+
+      # Trusted publishing needs npm >= 11.5.1 and Node >= 22.14; Node 22 still ships
+      # npm 10, so upgrade npm explicitly. A caret range rather than an exact pin:
+      # nothing automated updates a version inside a `run:` step, so an exact pin would
+      # go stale and silently miss npm security fixes, while the published tarball is
+      # determined by package.json `files` and the compiled dist, not by npm's version.
+      - name: Use an npm that supports trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          node --version
+          npm --version
+
       - run: npm ci
       - name: Tag matches package.json version
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - run: npm run build
+      - run: npm test
+
+      # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC token for a short-lived
+      # credential. Provenance is attached automatically for trusted publishes; the
+      # flag is kept so a misconfiguration fails loudly instead of publishing without it.
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

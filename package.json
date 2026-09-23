@@ -1,6 +1,6 @@
 {
   "name": "distroless-setup",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Move Angular, Node.js (Express, NestJS, Next.js) and Python (FastAPI, Flask, Django) apps to distroless container images. Interactive, shows a plan, backs up every file it touches, and writes a migration report.",
   "keywords": ["distroless", "docker", "dockerfile", "container", "security", "angular", "nodejs", "nextjs", "nestjs", "express", "python", "fastapi", "django", "flask", "cli"],
   "license": "MIT",
@@ -17,13 +17,15 @@
     "distroless-setup": "dist/cli.js"
   },
   "main": "dist/cli.js",
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": ["dist", "README.md", "CHANGELOG.md", "LICENSE"],
   "engines": {
     "node": ">=18.17"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/*.test.js",
+    "test": "npm run build && node --test test/unit.test.js",
+    "test:integration": "npm run build && node --test --test-concurrency=1 test/integration/*.test.js",
+    "test:all": "npm run test && npm run test:integration",
     "prepublishOnly": "npm test"
   },
   "dependencies": {

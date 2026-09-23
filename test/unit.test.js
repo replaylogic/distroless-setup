@@ -238,3 +238,91 @@ test("findAsgiWsgi: src layout, typed assignment, Flask factory, Django wsgi", (
   write(d, "site1/wsgi.py", "application = get_wsgi_application()\n");
   assert.equal(py.findAsgiWsgi(d, [], "django").target, "site1.wsgi:application");
 });
+
+test("has() recognises the uvicorn-worker distribution under either spelling", () => {
+  assert.equal(py.has("uvicorn-worker==0.4.0\n", "uvicorn-worker"), true);
+  assert.equal(py.has("uvicorn_worker==0.4.0\n", "uvicorn-worker"), true);
+  // `uvicorn` alone must not satisfy a uvicorn-worker check, and vice versa.
+  assert.equal(py.has("uvicorn==0.37.0\n", "uvicorn-worker"), false);
+  assert.equal(py.has("uvicorn-worker==0.4.0\n", "uvicorn"), false);
+});
+
+// ---- Plan: filesystem safety ----------------------------------------------------------------
+test("Plan refuses paths that resolve outside the repo", () => {
+  const root = tmp();
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo, { recursive: true });
+  const plan = new files.Plan(repo);
+
+  plan.write(path.join(repo, "nested", "ok.txt"), "x", "inside"); // sanity: nested creates are fine
+  assert.throws(() => plan.write(path.join(repo, "..", "escape.txt"), "x", "bad"), /outside/);
+  assert.throws(() => plan.write(path.join(repo, "a", "..", "..", "escape.txt"), "x", "bad"), /outside/);
+  assert.throws(() => plan.remove(path.join(root, "sibling.txt"), "bad"), /outside/);
+  assert.throws(() => plan.write(repo, "x", "bad"), /outside/); // the repo itself is not a target
+});
+
+test("Plan refuses to write through a symlink that leaves the repo", { skip: process.platform === "win32" ? "symlinks need elevation on Windows" : false }, () => {
+  const root = tmp();
+  const repo = path.join(root, "repo");
+  const outside = path.join(root, "outside");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(outside, { recursive: true });
+  fs.writeFileSync(path.join(outside, "secret.txt"), "original");
+
+  fs.symlinkSync(path.join(outside, "secret.txt"), path.join(repo, "link.txt"));
+  fs.symlinkSync(outside, path.join(repo, "linkdir"), "dir");
+
+  const plan = new files.Plan(repo);
+  assert.throws(() => plan.write(path.join(repo, "link.txt"), "x", "bad"), /outside/);
+  assert.throws(() => plan.write(path.join(repo, "linkdir", "new.txt"), "x", "bad"), /outside/);
+  assert.equal(fs.readFileSync(path.join(outside, "secret.txt"), "utf8"), "original");
+});
+
+test("Plan.apply writes every planned file and backs up what it replaces", () => {
+  const repo = tmp();
+  fs.writeFileSync(path.join(repo, "Dockerfile"), "old");
+  const plan = new files.Plan(repo);
+  plan.write(path.join(repo, "Dockerfile"), "new", "replace");
+  plan.write(path.join(repo, "sub", "created.txt"), "hello", "create");
+  plan.remove(path.join(repo, "gone.txt"), "remove"); // missing file: a no-op, not an error
+
+  const backup = plan.apply();
+  assert.equal(fs.readFileSync(path.join(repo, "Dockerfile"), "utf8"), "new");
+  assert.equal(fs.readFileSync(path.join(repo, "sub", "created.txt"), "utf8"), "hello");
+  assert.equal(fs.readFileSync(path.join(backup, "Dockerfile"), "utf8"), "old");
+});
+
+test("every version-bearing file agrees with package.json", () => {
+  const report = require("../dist/core/report");
+  const pkg = require("../package.json");
+  const lock = require("../package-lock.json");
+
+  assert.equal(report.VERSION, pkg.version, "bump src/core/report.ts VERSION together with package.json");
+  // The publish workflow checks the git tag against package.json, not the lockfile, so a
+  // stale lockfile version would otherwise ship unnoticed. `npm install --package-lock-only`
+  // is the fix; do not hand-edit the lockfile.
+  assert.equal(lock.version, pkg.version, "package-lock.json is stale: run `npm install --package-lock-only`");
+  assert.equal(lock.packages[""].version, pkg.version, "package-lock.json root package is stale");
+  assert.match(fs.readFileSync(path.join(__dirname, "..", "CHANGELOG.md"), "utf8"), new RegExp(`^## ${pkg.version.replace(/\./g, "\\.")}$`, "m"),
+    "CHANGELOG.md has no section for the current version");
+});
+
+test("back-to-back runs get separate backup directories", () => {
+  const repo = tmp();
+  fs.writeFileSync(path.join(repo, "Dockerfile"), "original");
+
+  const first = new files.Plan(repo);
+  first.write(path.join(repo, "Dockerfile"), "run-1", "replace");
+  const b1 = first.apply();
+
+  // Same second, same stamp: the second run must not copy over the first run's backups,
+  // or the user's original file is lost.
+  const second = new files.Plan(repo);
+  second.write(path.join(repo, "Dockerfile"), "run-2", "replace");
+  const b2 = second.apply();
+
+  assert.notEqual(b1, b2, "each run needs its own backup directory");
+  assert.equal(fs.readFileSync(path.join(b1, "Dockerfile"), "utf8"), "original");
+  assert.equal(fs.readFileSync(path.join(b2, "Dockerfile"), "utf8"), "run-1");
+  assert.equal(fs.readdirSync(path.join(repo, files.BACKUP_DIR)).length, 2);
+});
