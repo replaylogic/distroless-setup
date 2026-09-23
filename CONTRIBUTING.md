@@ -116,6 +116,9 @@ required branch-protection check — always runs and reflects this: it passes on
 documentation-only PR once classification succeeds, and otherwise requires both the unit
 matrix and the integration job to succeed.
 
+Automated AI/tool attribution trailers are not used in this repository. Legitimate human
+co-authorship remains supported. See `CLAUDE.md`.
+
 ## Security issues
 
 Please don't file a public issue for a vulnerability — see [SECURITY.md](SECURITY.md).
