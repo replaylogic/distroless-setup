@@ -5,7 +5,7 @@
 [![CI](https://github.com/replaylogic/distroless-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/replaylogic/distroless-setup/actions/workflows/ci.yml)
 [![license](https://img.shields.io/github/license/replaylogic/distroless-setup.svg)](LICENSE)
 
-Move an **Angular**, **React**, **Node.js** or **Python** app to a [distroless](https://github.com/GoogleContainerTools/distroless) container image: no shell, no package manager, non-root, read-only-root friendly.
+Move an **Angular**, **React**, **static Vite web**, **Node.js** or **Python** app to a [distroless](https://github.com/GoogleContainerTools/distroless) container image: no shell, no package manager, non-root, read-only-root friendly.
 
 A distroless runtime ships the interpreter and your application, and little else. That means a smaller attack surface, no shell or package manager for an attacker to pivot through, and far less unrelated OS packaging for a vulnerability scanner to flag — so the findings that remain are much more likely to be about your code. It is not a guaranteed reduction in any particular CVE count: your own dependencies come along unchanged.
 
