@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
+
+A feature release: static Vite apps that don't use React now get the same hardened static
+runtime as Angular and React, instead of a Node.js runtime they don't need. Node.js builds
+these apps; it does not run them. Only static Vite builds are supported, not every
+Vite-based framework. The React, Angular, Node.js and Python stacks behave as in 0.3.0.
 
 ### Static web (Vite) stack (`npx distroless-setup web`)
 
@@ -11,23 +16,33 @@
 - New `web` stack for Vite apps without React whose production build is static files. It
   reuses the React stack's static path as is: Node build stage, the shared Go static server,
   `gcr.io/distroless/static-debian13:nonroot`, `VITE_*` build-time analysis, `build.outDir`
-  / `root` / `base` from the Vite config, hardened `.dockerignore`, read-only root. Node.js
-  builds the app; it is not in the runtime image.
+  / `root` / `base` from the Vite config, hardened `.dockerignore`, read-only root.
+- **Node.js during the build, not at runtime.** Node.js runs `vite build` in the build
+  stage only. The runtime image has no Node.js, no `node_modules` and no shell.
 - **Detection needs several signals:** a `vite` dependency, a `vite.config.*` or a `vite
   build` build script (followed through one `npm run`), and `index.html` at the Vite root.
-  Server evidence (Express/Fastify/Koa/Hono/NestJS, `build.ssr` or `vite build --ssr`, a
-  `start` script that runs Node, a `main` file that exists, outside Electron, or a Vite
-  meta-framework such as SvelteKit or Nuxt) keeps the `node` stack first, and running `web`
-  on such a project stops under `--yes`. Library builds (`build.lib`) are not claimed. React
-  apps, Angular and the Node stack's own detection are unchanged.
+  Library builds (`build.lib`) are not claimed.
+- **Apps that need Node.js at runtime stay on the `node` stack.** Server evidence keeps
+  `node` first: Express/Fastify/Koa/Hono/NestJS, `build.ssr` or `vite build --ssr`, a Vite
+  meta-framework such as SvelteKit or Nuxt, a `start` script that runs a file with Node, or
+  a `main` file. Running `web` on such a project explains why and stops under `--yes`.
+- A `start` script counts as server evidence even with flags before the entry file
+  (`node --env-file=.env server.js`). `node --version` and `vite preview` do not count.
+- A `package.json` `main` counts only if the file exists, so the stale `index.js` that
+  `npm init` leaves behind no longer forces Node. Electron's `main` (a desktop main
+  process) never counts.
+- React apps built with Vite stay on the `react` stack. Angular detection and the Node
+  stack's own detection are unchanged.
 
 ### Documentation
 
-- Added beginner-friendly, step-by-step walkthrough guides for every first-class stack
-  (`docs/guides/angular.md`, `react.md`, `node.md`, `python.md`), each following a real
-  fixture project from `npx distroless-setup <stack>` through build/run/verify. Linked from
-  the root README's new "Step-by-step guides" section and from a `docs/guides/README.md`
-  index.
+- README, CLI help and the banner list the `web` stack, with its detection rules, runtime
+  table entry, validation-matrix row and limitations.
+- Added beginner-friendly, step-by-step walkthrough guides for the Angular, React, Node.js
+  and Python stacks (`docs/guides/angular.md`, `react.md`, `node.md`, `python.md`), each
+  following a real fixture project from `npx distroless-setup <stack>` through
+  build/run/verify. Linked from the root README's new "Step-by-step guides" section and
+  from a `docs/guides/README.md` index.
 - Added 20 real terminal screenshots (5 per stack) under `docs/assets/guides/<stack>/`,
   embedded in the matching guide, generated from the CLI's actual output — never
   hand-captured — by `docs/recordings/render-screenshots.mjs` (Node + a local headless
@@ -35,6 +50,22 @@
   as an animated-recording alternative for contributors with VHS installed.
 - Added optional Buy Me a Coffee funding links (`.github/FUNDING.yml` and a small README
   section near the bottom, not in the header).
+
+### Tests
+
+- New `vite-static` integration fixture: TypeScript + Vite 8, no React, run through the CLI
+  with no stack named. Detection must pick `web`, a real `vite build` runs inside
+  `docker build`, and the container is checked for no `node`/`npx` in the runtime image,
+  `--build-arg` values inlined into the bundle, SPA fallback, uid/gid, health,
+  `--read-only` with no writable mounts and a clean SIGTERM exit.
+- Unit and generation tests for detection between `web`, `react` and `node`, the required
+  Vite signals, server evidence (including flagged start commands and missing `main`
+  files), Vite config `outDir`/`root`, and refusing server evidence under `--yes`.
+
+### Other
+
+- CI skips the unit matrix and the Docker suite for documentation-only changes. Anything
+  else, including a change to CI itself, still runs everything.
 
 ## 0.3.0
 
