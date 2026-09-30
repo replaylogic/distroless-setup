@@ -572,6 +572,125 @@ test("react generation: nginx headers carried over, non-trivial nginx kept and r
   assert.match(rp.out, /does NOT proxy/);
 });
 
+// ---- Static web (Vite without React) ------------------------------------------------------
+const VANILLA_PKG = { name: "vanilla", scripts: { dev: "vite", build: "tsc && vite build", preview: "vite preview" },
+  devDependencies: { typescript: "5", vite: "8" } };
+const VITE_CFG = "import { defineConfig } from 'vite';\nexport default defineConfig({});\n";
+const webScore = (d) => stacks.STACKS.find((st) => st.id === "web").detect(d)?.score ?? null;
+
+test("detection competition: static Vite apps without React pick web, anything with a server keeps Node", () => {
+  const vanilla = { "package.json": VANILLA_PKG, "vite.config.ts": VITE_CFG, "index.html": "<script type=module src=/src/main.ts></script>" };
+  // HashTick's shape: Vite root in src/, build reached through `npm run`, and an Electron desktop shell
+  // whose main/start look like a Node entry point to the node stack.
+  const electron = {
+    "package.json": { name: "desk", main: "electron/main.js", scripts: { "web:build": "vite build", build: "npm run web:build", start: "npm run desktop", desktop: "vite build && electron ." },
+      devDependencies: { vite: "8", electron: "40" } },
+    "vite.config.mjs": "export default defineConfig({ root: 'src', base: './', build: { outDir: '../dist' } });",
+    "src/index.html": "<div id=app></div>",
+  };
+  const withPkg = (patch) => ({ ...vanilla, "package.json": { ...VANILLA_PKG, ...patch } });
+  const cases = [
+    ["vanilla Vite (config, `vite build`, index.html)", vanilla, "web"],
+    ["vanilla Vite with a start script that only previews", withPkg({ scripts: { ...VANILLA_PKG.scripts, start: "vite preview" } }), "web"],
+    ["Vite + Electron desktop shell, root: src", electron, "web"],
+    ["React + Vite is still React", { ...vanilla, "package.json": VITE_PKG }, "react"],
+    ["Vite frontend + Express backend", withPkg({ scripts: { ...VANILLA_PKG.scripts, start: "node server.js" }, dependencies: { express: "5" } }), "node"],
+    ["Vite + Express without a start script", withPkg({ dependencies: { express: "5" } }), "node"],
+    ["Vite with a Node start script", withPkg({ scripts: { ...VANILLA_PKG.scripts, start: "node dist/server/entry.js" } }), "node"],
+    ["Vite with a dev-runner server", withPkg({ scripts: { ...VANILLA_PKG.scripts, start: "tsx server.ts" } }), "node"],
+    ["Vite with a Node start script using flags", withPkg({ scripts: { ...VANILLA_PKG.scripts, start: "node --env-file=.env server.js" } }), "node"],
+    ["Vite with a `main` server file (no Electron)", { ...withPkg({ main: "server.js" }), "server.js": "require('http').createServer().listen(3000);" }, "node"],
+    ["Vite with a stale `main` from npm init (no such file)", withPkg({ main: "index.js" }), "web"],
+    ["Vite SSR build script", withPkg({ scripts: { ...VANILLA_PKG.scripts, "build:server": "vite build --ssr src/entry-server.ts" } }), "node"],
+    ["Vite build.ssr in config", { ...vanilla, "vite.config.ts": "export default defineConfig({ build: { ssr: 'src/server.ts' } });" }, "node"],
+    ["SvelteKit", withPkg({ devDependencies: { ...VANILLA_PKG.devDependencies, "@sveltejs/kit": "2" } }), "node"],
+    ["Vite library mode", { ...vanilla, "vite.config.ts": "export default defineConfig({ build: { lib: { entry: 'src/index.ts' } } });" }, "node"],
+  ];
+  for (const [name, filesMap, want] of cases) assert.equal(winner(project(filesMap)), want, name);
+});
+
+test("static web detection: needs Vite plus a second signal and an index.html at the Vite root", () => {
+  const html = { "index.html": "<div id=app></div>" };
+  const dep = { devDependencies: { vite: "8" } };
+  assert.equal(webScore(project({ "package.json": { ...dep, scripts: { build: "vite build" } }, ...html })), 0.95, "dependency + `vite build` script");
+  assert.equal(webScore(project({ "package.json": dep, "vite.config.mts": VITE_CFG, ...html })), 0.95, "dependency + vite.config.mts");
+  assert.equal(webScore(project({ "package.json": { ...dep, scripts: { build: "npm run build:web", "build:web": "vite build" } }, ...html })), 0.95, "`vite build` one `npm run` away");
+  assert.equal(webScore(project({ "package.json": dep, ...html })), null, "a vite dependency alone is not enough");
+  assert.equal(webScore(project({ "package.json": { scripts: { build: "vite build" } }, "vite.config.ts": VITE_CFG, ...html })), null, "no vite dependency: can't build");
+  assert.equal(webScore(project({ "package.json": { ...dep, scripts: { build: "vite build" } } })), null, "no index.html: not an app entry");
+  assert.equal(webScore(project({ "package.json": dep, "vite.config.ts": "export default { root: 'web' }", ...html })), null, "index.html must be at the Vite root");
+  assert.equal(webScore(project({ "package.json": dep, "vite.config.ts": "export default { root: 'web' }", "web/index.html": "" })), 0.95, "Vite root with its index.html");
+  assert.equal(webScore(project({ "package.json": dep, "vite.config.ts": "export default { root: process.env.ROOT }", ...html })), null, "dynamic root: can't confirm the entry");
+  assert.equal(webScore(project({ "package.json": { ...VITE_PKG }, "vite.config.ts": VITE_CFG, ...html })), null, "React apps belong to the react stack");
+  assert.equal(webScore(project({ "angular.json": "{}", "package.json": dep, "vite.config.ts": VITE_CFG, ...html })), null, "Angular workspace");
+  assert.equal(webScore(project({ "package.json": { ...dep, dependencies: { fastify: "5" } }, "vite.config.ts": VITE_CFG, ...html })), 0.2, "server framework: offered, never preferred");
+  const ev = ra.viteStaticApp(project({ "package.json": { ...dep, dependencies: { koa: "2" } }, "vite.config.ts": VITE_CFG, ...html }), { ...dep, dependencies: { koa: "2" } });
+  assert.match(ev.server, /koa/);
+  assert.deepEqual(ra.viteStaticApp(project({ "package.json": dep, "vite.config.ts": VITE_CFG, ...html }), dep).server, null);
+  // Start scripts: a runner with a file argument, after any flags, is a server; version checks and static servers are not.
+  const startServer = (start) => ra.viteStaticApp(project({ "package.json": dep, "vite.config.ts": VITE_CFG, ...html }), { ...dep, scripts: { start } }).server;
+  for (const start of ["node --env-file=.env server.js", "node --enable-source-maps dist/server.js", "node -r dotenv/config server.js",
+    "nodemon --watch src server.ts", "ts-node --esm server.ts", "npm run build && node server.js"])
+    assert.match(startServer(start) ?? "", /"start" script that runs Node\.js/, start);
+  for (const start of ["node --version", "node --version && vite preview", "vite preview", "serve -s dist"])
+    assert.equal(startServer(start), null, start);
+});
+
+test("web generation: vanilla Vite gets the static React-path image, not a Node.js runtime", () => {
+  const d = project({ "package.json": VANILLA_PKG, "package-lock.json": "{}", "vite.config.ts": VITE_CFG,
+    "index.html": "<title>%VITE_APP_TITLE%</title><script type=module src=/src/main.ts></script>", "src/main.ts": "console.log(import.meta.env.VITE_API_URL)",
+    ".env.production": "VITE_API_URL=https://prod" });
+  const r = cli(d);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /Static web \(Vite\)/);
+  assert.doesNotMatch(r.out, /distroless Node\.js image/);
+  const df = r.read("Dockerfile");
+  assert.match(df, /npx distroless-setup web/);
+  assert.match(df, /^FROM node:24-trixie-slim AS build$/m, "Node.js builds the app...");
+  assert.match(df, /^ARG VITE_API_URL\nARG VITE_APP_TITLE\nRUN npm run build$/m);
+  assert.match(df, /^COPY --from=build --chown=65532:0 \/app\/dist \/app\/www$/m);
+  assert.match(df, /^FROM gcr\.io\/distroless\/static-debian13:nonroot AS serve$/m, "...but does not run it");
+  assert.doesNotMatch(df, /distroless\/nodejs/);
+  assert.doesNotMatch(df.slice(df.indexOf("AS serve")), /node_modules|npm|node:/);
+  assert.match(df, /^USER 65532:0$/m);
+  assert.match(df, /^ENTRYPOINT \["\/app\/server"\]$/m);
+  assert.ok(r.read("server/main.go").includes("func isHashedName"));
+  assert.deepEqual(r.read(".dockerignore").trim().split("\n").slice(0, 2), ["node_modules", "dist"]);
+  const rep = r.read("DISTROLESS-MIGRATION.md");
+  assert.match(rep, /## Static web build/);
+  assert.match(rep, /Node\.js is used only to build the app/);
+  assert.match(rep, /Local env files: `\.env\.production`\. Vite reads them during the build/);
+  assert.match(rep, /Setting `VITE_\*` on the running container does not change an already-built browser bundle\./);
+  assert.doesNotMatch(rep, /React/);
+});
+
+test("web generation: build.outDir and root come from the Vite config", () => {
+  const custom = project({ "package.json": VANILLA_PKG, "vite.config.ts": "export default defineConfig({ build: { outDir: 'build/web' } });", "index.html": "" });
+  const r = cli(custom, "web");
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.read("Dockerfile"), /^COPY --from=build --chown=65532:0 \/app\/build\/web \/app\/www$/m);
+
+  const rooted = project({ "package.json": VANILLA_PKG, "vite.config.mjs": "export default defineConfig({ root: 'src', base: './', build: { outDir: '../dist' } });", "src/index.html": "" });
+  const rr = cli(rooted);
+  assert.equal(rr.code, 0, rr.out);
+  assert.match(rr.read("Dockerfile"), /\/app\/dist \/app\/www$/m);
+  assert.doesNotMatch(rr.read("DISTROLESS-MIGRATION.md"), /## Base path/, "a relative base needs no prefix stripping");
+});
+
+test("web stack refuses server evidence under --yes and non-Vite projects outright", () => {
+  const server = project({ "package.json": { ...VANILLA_PKG, dependencies: { express: "5" }, scripts: { ...VANILLA_PKG.scripts, start: "node server.js" } },
+    "vite.config.ts": VITE_CFG, "index.html": "" });
+  const r = cli(server, "web");
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /express/);
+  assert.match(r.out, /npx distroless-setup node/);
+  assert.equal(r.read("Dockerfile"), null, "nothing is written when aborting");
+
+  const none = cli(project({ "package.json": { scripts: { build: "webpack" }, devDependencies: { webpack: "5" } }, "index.html": "" }), "web");
+  assert.equal(none.code, 1, none.out);
+  assert.match(none.out, /no Vite app/);
+});
+
 test("react stack refuses Next.js explicitly and points at the node stack", () => {
   const d = project({ "package.json": { dependencies: { next: "15", react: "19", "react-dom": "19" } } });
   const r = cli(d, "react");

@@ -10,7 +10,7 @@ import {
 } from "../shared/static-spa";
 import {
   BUILDER_LABEL, Builder, ClientVar, ReactRouterSettings, ViteSettings, basePath, classify, clientFiles, configFile, deps, envFiles,
-  hasReact, otherFramework, reactRouterSettings, scanClientEnv, serverFramework, viteSettings,
+  hasReact, otherFramework, reactRouterSettings, scanClientEnv, serverFramework, viteSettings, viteStaticApp,
 } from "./analysis";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -20,14 +20,19 @@ const DEFAULT_OUT: Record<Builder, string> = { vite: "dist", "react-router": "bu
 const BUILD_DIRS = new Set(["dist", "build", "out"]);
 const FRAMEWORK_LABEL = { next: "Next.js", remix: "Remix", gatsby: "Gatsby" } as const;
 
+/** "react" for React apps; "web" for other Vite apps with a static build (the web stack). */
+export type StaticKind = "react" | "web";
+
+const WEB_LABEL = "Static web (Vite)";
+
 export function renderDockerfile(o: {
   nodeImage: string; install: InstallAnswers; build: string; out: string; buildArgs: string[];
-  goImage: string; image: string; port: string; serverDir: string;
+  goImage: string; image: string; port: string; serverDir: string; kind?: StaticKind;
 }): string {
   const L = [
-    `# ${MARKER} v${VERSION}. Re-run \`npx distroless-setup react\` to regenerate.`,
+    `# ${MARKER} v${VERSION}. Re-run \`npx distroless-setup ${o.kind ?? "react"}\` to regenerate.`,
     "",
-    "# ---- Stage 1: build the React app ----",
+    o.kind === "web" ? "# ---- Stage 1: build the app (the only stage with Node.js) ----" : "# ---- Stage 1: build the React app ----",
     `FROM ${o.nodeImage} AS build`,
     "WORKDIR /app",
     ...installLines(o.install),
@@ -98,161 +103,185 @@ export const reactStack: Stack = {
     return { score, reason: `package.json, ${reason}` };
   },
 
-  async run(ctx: Ctx): Promise<StackResult> {
-    const { repo, P, plan } = ctx;
-    section("Scanning repo");
-    const pkg = tryJson(path.join(repo, "package.json"));
-    if (!pkg) fail(`no readable package.json in ${repo}`);
-    const d = deps(pkg);
-    const other = otherFramework(d);
-    if (other === "next")
-      fail("this is a Next.js app. Next.js is handled by the node stack: npx distroless-setup node");
-    const builder = classify(repo, pkg);
-    const vite = builder === "vite" || builder === "react-router" ? viteSettings(repo, pkg) : null;
-    const rr = builder === "react-router" ? reactRouterSettings(repo) : null;
-
-    panel("Before we start", [[null, [
-      "The React stack containerises a static build: the production build output",
-      "(index.html plus assets) served by a tiny Go server on distroless/static.",
-      "There is no Node.js at runtime, so server-side rendering does not run.",
-      "",
-      `Detected: ${s(BUILDER_LABEL[builder], "cyan", "bold")}${pkg.name ? s(`  (${pkg.name})`, "gray") : ""}`,
-    ]]], hasReact(d) ? "cyan" : "yellow");
-    if (!hasReact(d)) warn("package.json lists neither react nor react-dom");
-
-    let unconfirmedStatic: string | null = null;
-    if (other) {
-      warn(`this looks like a ${FRAMEWORK_LABEL[other]} project. ${FRAMEWORK_LABEL[other]} deployments can depend on a server or on`);
-      line(`    framework-specific hosting; this stack only serves a folder of static files as-is.`);
-      if (!(await P.confirm("Does the production build produce a static folder with an index.html to serve as-is?", false)))
-        fail(`aborted: ${FRAMEWORK_LABEL[other]} server deployments are not handled by the react stack`);
-      unconfirmedStatic = `This is a ${FRAMEWORK_LABEL[other]} project. You confirmed its build output is a static folder; framework-specific hosting features (redirects, functions, server rendering) are not reproduced.`;
-    }
-    if (rr) {
-      const where = rr.file ? rel(repo, rr.file) : "react-router.config.ts (not found)";
-      if (rr.ssr === false) ok(`${where}: ssr: false (SPA mode)`);
-      else {
-        const why = rr.ssr === true ? "sets ssr: true" : rr.ssr === "dynamic" ? "sets ssr to a value that can't be read statically" : "doesn't set ssr, and React Router defaults to ssr: true";
-        warn(`${where} ${why}.`);
-        line("    React Router framework apps render on a Node server by default. This release's React");
-        line("    stack serves static/SPA output only; it does not run React Router SSR.");
-        if (!(await P.confirm("Is build/client a complete static SPA build (index.html included) that you want to serve?", false)))
-          fail("aborted: set `ssr: false` in react-router.config for SPA mode, or containerise the server build with the node stack");
-        unconfirmedStatic = `${where} ${why}. You confirmed the client output is a complete static build; if the app relies on server rendering or loaders, it will not work from this image.`;
-      }
-      if (rr.prerender) warn("react-router.config sets `prerender`; see the report on how the SPA fallback interacts with it");
-    }
-    if (!(await P.confirm("Continue setting up a distroless image for this React app?", true))) fail("aborted: no files changed");
-
-    const dockerfile = path.join(repo, "Dockerfile");
-    const existing = parseExistingDockerfile(dockerfile);
-    const nginx = scanNginx(repo);
-    const leftovers = nginxLeftovers(repo, nginx);
-    if (exists(dockerfile)) info("existing Dockerfile found (will be backed up and replaced)");
-    for (const f of leftovers.files) info(`nginx config / entrypoint: ${rel(repo, f)}`);
-    if (nginx.spaFallback) info("nginx `try_files ... /index.html` found: the Go server has the same SPA fallback built in");
-    if (nginx.proxies.length) {
-      warn("nginx reverse-proxies requests. The static server does NOT proxy:");
-      nginx.proxies.forEach((p) => detail(p));
-      line("    Move API routing to your ingress/gateway, or call the API by its own URL.");
-      if (!(await P.confirm("Continue anyway?", false))) fail("aborted: proxy_pass needs a different solution first");
-    }
-    for (const o of nginx.other) warn(`${o} - not ported; listed in the report`);
-    for (const f of leftovers.substitution) warn(`${f} rewrites files at container start (envsubst/sed); that can't run without a shell`);
-
-    section("Build stage");
-    const install = await askInstall(repo, P, existing);
-    const major = nodeMajorDefault(repo, existing, "24");
-    const nodeImage = await P.ask("Node image for the build stage", `node:${major}-trixie-slim`);
-    const buildCmd = await P.ask("Build command", existing.build ?? defaultBuild(builder, pkg, install),
-      (v) => (v ? null : "required: the image serves the build output"));
-
-    let outDef = DEFAULT_OUT[builder];
-    const notes: string[] = [];
-    if (vite && builder === "vite") {
-      if (vite.outDir) outDef = vite.outDir;
-      else notes.push(...vite.notes);
-    }
-    if (rr?.outDir) outDef = rr.outDir;
-    const fromNginx = exists(dockerfile) ? nginxCopySource(dockerfile) : null;
-    if (other) {
-      outDef = fromNginx ?? (other === "gatsby" ? "public" : "build/client");
-      notes.push(`the output directory of a ${FRAMEWORK_LABEL[other]} build isn't read from its configuration`);
-    } else if (builder === "generic") {
-      if (fromNginx) { outDef = fromNginx; info(`the existing Dockerfile copies ${fromNginx}/ into nginx`); }
-      else notes.push("the build tool isn't one this stack recognises, so the output directory is a guess");
-    }
-    for (const n of notes) warn(`${n}: enter the directory that contains the built index.html`);
-    const outDir = (await P.ask("Build output directory (contains index.html)", outDef,
-      (v) => (v && !path.isAbsolute(v) && !v.split(/[\\/]/).includes("..") && v.replace(/^\.?\/+|\/+$/g, "") ? null : "a relative folder inside the repo"))).replace(/\\/g, "/").replace(/^\.?\/+|\/+$/g, "");
-    const outGuessed = notes.length > 0 && outDir === outDef;
-
-    const env = scanClientEnv(repo, clientFiles(repo, []));
-    const dotenv = envFiles(repo);
-    if (env.vars.length) info(`client build-time variables: ${env.vars.map((v) => v.name).join(", ")}`);
-    for (const v of env.vars.filter((x) => x.secretish)) warn(`${v.name} looks like a credential, and it will be readable in the browser bundle`);
-    const base = basePath(builder, pkg, vite, rr);
-    if (base) warn(`the app is built for the path prefix ${base.value} (${base.source}); see the report`);
-
-    const headers = await gatherHeaders(repo, P, nginx);
-
-    section("Runtime image");
-    const port = await askPort(P, [existing.port, nginx.listen]);
-    const image = await askImage(P, "Runtime base image", RUNTIME_IMAGE);
-    const goImage = await P.ask("Go builder image (Go 1.24+)", GO_IMAGE);
-    const serverDir = await askServerDir(repo, P);
-
-    const buildArgs = env.vars.map((v) => v.name);
-    plan.write(dockerfile, renderDockerfile({ nodeImage, install, build: buildCmd, out: outDir, buildArgs, goImage, image, port, serverDir }),
-      "3-stage distroless build (Node build, Go server, distroless/static)");
-    const serverFiles = planServer(plan, repo, serverDir, NO_RUNTIME_CONFIG, headers);
-
-    section("Cleanup of files the new approach replaces");
-    const nontrivial = nginx.other.length + nginx.dynamic.length + leftovers.substitution.length > 0;
-    let removed = false;
-    if (leftovers.files.length) {
-      leftovers.files.forEach((f) => info(rel(repo, f)));
-      if (nontrivial) warn("they contain behaviour the static server doesn't reproduce (listed in the report)");
-      if (await P.confirm("Remove these (backed up first)?", !nontrivial)) {
-        leftovers.files.forEach((f) => plan.remove(f, "replaced by the static server"));
-        removed = true;
-      }
-    } else info("nothing to clean up");
-
-    const needed = ["package.json", ...(install.pm.lock ? [install.pm.lock] : []), ...install.extras.map((e) => e.replace(/\/+$/, "")), ...serverFiles,
-      ...[configFile(repo, "vite.config"), configFile(repo, "react-router.config")].filter((f): f is string => Boolean(f)).map((f) => rel(repo, f)),
-      ...["index.html", "public/index.html"].filter((f) => exists(path.join(repo, f)))];
-    const outTop = outDir.split("/")[0];
-    const r = report({ repo, builder, pkg, buildCmd, outDir, outGuessed, env: env.vars, unprefixed: builder === "vite" || builder === "react-router" ? env.unprefixed : [],
-      dotenv, vite, rr, base, nginx, leftovers, removed, unconfirmedStatic });
-    return {
-      stack: BUILDER_LABEL[builder],
-      imageName: String(pkg.name ?? path.basename(repo)).replace(/^@[^/]+\//, "").replace(/[^a-z0-9._-]/gi, "-").toLowerCase() || "app",
-      port, runtimeImage: image,
-      summary: [`Build: \`${buildCmd}\``, `Build output: \`${outDir}\``, `Client build-time variables: ${env.vars.length}`,
-        `Base path: ${base ? `\`${base.value}\`` : "/"}`],
-      consoleFacts: [
-        `${s(G.ok, "green")} ${outDir}/ served by the Go static server (SPA fallback, /healthz)`,
-        `${env.vars.length ? s(G.warn, "yellow") : s(G.bullet, "gray")} ${env.vars.length} client build-time variable(s)${env.vars.length ? ": set with --build-arg, not at runtime" : ""}`,
-        ...(base ? [`${s(G.warn, "yellow")} built for ${base.value}: the ingress must strip it`] : []),
-      ],
-      actions: r.actions, sections: r.sections,
-      runEnv: [],
-      verify: [`curl -sI http://localhost:${port}/some/deep/route    # 200, SPA fallback to index.html`,
-        `curl -sI -H 'Accept-Encoding: gzip' http://localhost:${port}/   # Content-Encoding: gzip`],
-      // The build stage does `COPY . .`: keep local secrets (and .env files the bundler would inline) out of the context.
-      dockerignoreRecommended: ["node_modules", ...(BUILD_DIRS.has(outTop) ? [outTop] : []), ...(builder === "react-router" ? [".react-router"] : []),
-        ".git", "coverage", ".env", ".env.*", "!.env.example", "*.pem", "*.key"],
-      dockerignoreNeeded: needed,
-      reviewHits: reviewReferences(repo, new Set(removed ? leftovers.files : []), /\bvite preview\b|\bserve\s+-s\b|\bhttp-server\b/),
-      healthPath: "/healthz",
-      writablePaths: [],
-    };
-  },
+  run: (ctx) => runStaticBuild(ctx, "react"),
 };
 
+/**
+ * The static-build path shared by the react and web stacks: a Node build stage runs the
+ * production build, and the shared Go static server serves its output on distroless/static.
+ * `web` is a Vite app without React; it only changes the checks up front and the wording.
+ */
+export async function runStaticBuild(ctx: Ctx, kind: StaticKind): Promise<StackResult> {
+  const { repo, P, plan } = ctx;
+  section("Scanning repo");
+  const pkg = tryJson(path.join(repo, "package.json"));
+  if (!pkg) fail(`no readable package.json in ${repo}`);
+  const d = deps(pkg);
+  const other = kind === "react" ? otherFramework(d) : null;
+  if (other === "next")
+    fail("this is a Next.js app. Next.js is handled by the node stack: npx distroless-setup node");
+  const web = kind === "web" ? viteStaticApp(repo, pkg) : null;
+  if (kind === "web" && !web)
+    fail("no Vite app found: the web stack needs a `vite` dependency, a vite.config.* or a `vite build` script, and index.html at the Vite root. For other builders use the react stack (React) or the node stack (a Node.js server)");
+  const builder: Builder = kind === "web" ? "vite" : classify(repo, pkg);
+  const label = kind === "web" ? WEB_LABEL : BUILDER_LABEL[builder];
+  const vite = builder === "vite" || builder === "react-router" ? viteSettings(repo, pkg) : null;
+  const rr = builder === "react-router" ? reactRouterSettings(repo) : null;
+
+  const intro = kind === "web" ? [
+    "Node.js is used to build this app, not to run it: the production build output",
+    "(index.html plus assets) is served by a tiny Go server on distroless/static.",
+    "There is no Node.js at runtime, so server-side code does not run.",
+  ] : [
+    "The React stack containerises a static build: the production build output",
+    "(index.html plus assets) served by a tiny Go server on distroless/static.",
+    "There is no Node.js at runtime, so server-side rendering does not run.",
+  ];
+  panel("Before we start", [[null, [...intro, "",
+    `Detected: ${s(label, "cyan", "bold")}${pkg.name ? s(`  (${pkg.name})`, "gray") : ""}`,
+  ]]], kind === "web" || hasReact(d) ? "cyan" : "yellow");
+  if (kind === "react" && !hasReact(d)) warn("package.json lists neither react nor react-dom");
+  if (web) ok(`Vite app: ${web.evidence.join(", ")}`);
+
+  let unconfirmedStatic: string | null = null;
+  if (web?.server) {
+    warn(`this project ${web.server}, which suggests it needs a Node.js server at runtime.`);
+    line("    This stack only serves the static build output; nothing server-side runs in the image.");
+    if (!(await P.confirm("Is the Vite build output a complete static app (index.html included) that you want to serve?", false)))
+      fail("aborted: to run a Node.js server, use the node stack: npx distroless-setup node");
+    unconfirmedStatic = `This project ${web.server}. You confirmed the Vite build output is a complete static app; anything that relies on a Node.js server will not work from this image.`;
+  }
+  if (other) {
+    warn(`this looks like a ${FRAMEWORK_LABEL[other]} project. ${FRAMEWORK_LABEL[other]} deployments can depend on a server or on`);
+    line(`    framework-specific hosting; this stack only serves a folder of static files as-is.`);
+    if (!(await P.confirm("Does the production build produce a static folder with an index.html to serve as-is?", false)))
+      fail(`aborted: ${FRAMEWORK_LABEL[other]} server deployments are not handled by the react stack`);
+    unconfirmedStatic = `This is a ${FRAMEWORK_LABEL[other]} project. You confirmed its build output is a static folder; framework-specific hosting features (redirects, functions, server rendering) are not reproduced.`;
+  }
+  if (rr) {
+    const where = rr.file ? rel(repo, rr.file) : "react-router.config.ts (not found)";
+    if (rr.ssr === false) ok(`${where}: ssr: false (SPA mode)`);
+    else {
+      const why = rr.ssr === true ? "sets ssr: true" : rr.ssr === "dynamic" ? "sets ssr to a value that can't be read statically" : "doesn't set ssr, and React Router defaults to ssr: true";
+      warn(`${where} ${why}.`);
+      line("    React Router framework apps render on a Node server by default. This release's React");
+      line("    stack serves static/SPA output only; it does not run React Router SSR.");
+      if (!(await P.confirm("Is build/client a complete static SPA build (index.html included) that you want to serve?", false)))
+        fail("aborted: set `ssr: false` in react-router.config for SPA mode, or containerise the server build with the node stack");
+      unconfirmedStatic = `${where} ${why}. You confirmed the client output is a complete static build; if the app relies on server rendering or loaders, it will not work from this image.`;
+    }
+    if (rr.prerender) warn("react-router.config sets `prerender`; see the report on how the SPA fallback interacts with it");
+  }
+  if (!(await P.confirm(`Continue setting up a distroless image for this ${kind === "web" ? "" : "React "}app?`, true))) fail("aborted: no files changed");
+
+  const dockerfile = path.join(repo, "Dockerfile");
+  const existing = parseExistingDockerfile(dockerfile);
+  const nginx = scanNginx(repo);
+  const leftovers = nginxLeftovers(repo, nginx);
+  if (exists(dockerfile)) info("existing Dockerfile found (will be backed up and replaced)");
+  for (const f of leftovers.files) info(`nginx config / entrypoint: ${rel(repo, f)}`);
+  if (nginx.spaFallback) info("nginx `try_files ... /index.html` found: the Go server has the same SPA fallback built in");
+  if (nginx.proxies.length) {
+    warn("nginx reverse-proxies requests. The static server does NOT proxy:");
+    nginx.proxies.forEach((p) => detail(p));
+    line("    Move API routing to your ingress/gateway, or call the API by its own URL.");
+    if (!(await P.confirm("Continue anyway?", false))) fail("aborted: proxy_pass needs a different solution first");
+  }
+  for (const o of nginx.other) warn(`${o} - not ported; listed in the report`);
+  for (const f of leftovers.substitution) warn(`${f} rewrites files at container start (envsubst/sed); that can't run without a shell`);
+
+  section("Build stage");
+  const install = await askInstall(repo, P, existing);
+  const major = nodeMajorDefault(repo, existing, "24");
+  const nodeImage = await P.ask("Node image for the build stage", `node:${major}-trixie-slim`);
+  const buildCmd = await P.ask("Build command", existing.build ?? defaultBuild(builder, pkg, install),
+    (v) => (v ? null : "required: the image serves the build output"));
+
+  let outDef = DEFAULT_OUT[builder];
+  const notes: string[] = [];
+  if (vite && builder === "vite") {
+    if (vite.outDir) outDef = vite.outDir;
+    else notes.push(...vite.notes);
+  }
+  if (rr?.outDir) outDef = rr.outDir;
+  const fromNginx = exists(dockerfile) ? nginxCopySource(dockerfile) : null;
+  if (other) {
+    outDef = fromNginx ?? (other === "gatsby" ? "public" : "build/client");
+    notes.push(`the output directory of a ${FRAMEWORK_LABEL[other]} build isn't read from its configuration`);
+  } else if (builder === "generic") {
+    if (fromNginx) { outDef = fromNginx; info(`the existing Dockerfile copies ${fromNginx}/ into nginx`); }
+    else notes.push("the build tool isn't one this stack recognises, so the output directory is a guess");
+  }
+  for (const n of notes) warn(`${n}: enter the directory that contains the built index.html`);
+  const outDir = (await P.ask("Build output directory (contains index.html)", outDef,
+    (v) => (v && !path.isAbsolute(v) && !v.split(/[\\/]/).includes("..") && v.replace(/^\.?\/+|\/+$/g, "") ? null : "a relative folder inside the repo"))).replace(/\\/g, "/").replace(/^\.?\/+|\/+$/g, "");
+  const outGuessed = notes.length > 0 && outDir === outDef;
+
+  const env = scanClientEnv(repo, clientFiles(repo, []));
+  const dotenv = envFiles(repo);
+  if (env.vars.length) info(`client build-time variables: ${env.vars.map((v) => v.name).join(", ")}`);
+  for (const v of env.vars.filter((x) => x.secretish)) warn(`${v.name} looks like a credential, and it will be readable in the browser bundle`);
+  const base = basePath(builder, pkg, vite, rr);
+  if (base) warn(`the app is built for the path prefix ${base.value} (${base.source}); see the report`);
+
+  const headers = await gatherHeaders(repo, P, nginx);
+
+  section("Runtime image");
+  const port = await askPort(P, [existing.port, nginx.listen]);
+  const image = await askImage(P, "Runtime base image", RUNTIME_IMAGE);
+  const goImage = await P.ask("Go builder image (Go 1.24+)", GO_IMAGE);
+  const serverDir = await askServerDir(repo, P);
+
+  const buildArgs = env.vars.map((v) => v.name);
+  plan.write(dockerfile, renderDockerfile({ nodeImage, install, build: buildCmd, out: outDir, buildArgs, goImage, image, port, serverDir, kind }),
+    "3-stage distroless build (Node build, Go server, distroless/static)");
+  const serverFiles = planServer(plan, repo, serverDir, NO_RUNTIME_CONFIG, headers);
+
+  section("Cleanup of files the new approach replaces");
+  const nontrivial = nginx.other.length + nginx.dynamic.length + leftovers.substitution.length > 0;
+  let removed = false;
+  if (leftovers.files.length) {
+    leftovers.files.forEach((f) => info(rel(repo, f)));
+    if (nontrivial) warn("they contain behaviour the static server doesn't reproduce (listed in the report)");
+    if (await P.confirm("Remove these (backed up first)?", !nontrivial)) {
+      leftovers.files.forEach((f) => plan.remove(f, "replaced by the static server"));
+      removed = true;
+    }
+  } else info("nothing to clean up");
+
+  const needed = ["package.json", ...(install.pm.lock ? [install.pm.lock] : []), ...install.extras.map((e) => e.replace(/\/+$/, "")), ...serverFiles,
+    ...[configFile(repo, "vite.config"), configFile(repo, "react-router.config")].filter((f): f is string => Boolean(f)).map((f) => rel(repo, f)),
+    ...new Set([...["index.html", "public/index.html"].filter((f) => exists(path.join(repo, f))), ...(web ? [web.index] : [])])];
+  const outTop = outDir.split("/")[0];
+  const r = report({ repo, kind, label, builder, pkg, buildCmd, outDir, outGuessed, env: env.vars, unprefixed: builder === "vite" || builder === "react-router" ? env.unprefixed : [],
+    dotenv, vite, rr, base, nginx, leftovers, removed, unconfirmedStatic });
+  return {
+    stack: label,
+    imageName: String(pkg.name ?? path.basename(repo)).replace(/^@[^/]+\//, "").replace(/[^a-z0-9._-]/gi, "-").toLowerCase() || "app",
+    port, runtimeImage: image,
+    summary: [`Build: \`${buildCmd}\``, `Build output: \`${outDir}\``, `Client build-time variables: ${env.vars.length}`,
+      `Base path: ${base ? `\`${base.value}\`` : "/"}`],
+    consoleFacts: [
+      `${s(G.ok, "green")} ${outDir}/ served by the Go static server (SPA fallback, /healthz)`,
+      `${env.vars.length ? s(G.warn, "yellow") : s(G.bullet, "gray")} ${env.vars.length} client build-time variable(s)${env.vars.length ? ": set with --build-arg, not at runtime" : ""}`,
+      ...(base ? [`${s(G.warn, "yellow")} built for ${base.value}: the ingress must strip it`] : []),
+    ],
+    actions: r.actions, sections: r.sections,
+    runEnv: [],
+    verify: [`curl -sI http://localhost:${port}/some/deep/route    # 200, SPA fallback to index.html`,
+      `curl -sI -H 'Accept-Encoding: gzip' http://localhost:${port}/   # Content-Encoding: gzip`],
+    // The build stage does `COPY . .`: keep local secrets (and .env files the bundler would inline) out of the context.
+    dockerignoreRecommended: ["node_modules", ...(BUILD_DIRS.has(outTop) ? [outTop] : []), ...(builder === "react-router" ? [".react-router"] : []),
+      ".git", "coverage", ".env", ".env.*", "!.env.example", "*.pem", "*.key"],
+    dockerignoreNeeded: needed,
+    reviewHits: reviewReferences(repo, new Set(removed ? leftovers.files : []), /\bvite preview\b|\bserve\s+-s\b|\bhttp-server\b/),
+    healthPath: "/healthz",
+    writablePaths: [],
+  };
+}
+
 interface ReportInput {
-  repo: string; builder: Builder; pkg: Json; buildCmd: string; outDir: string; outGuessed: boolean;
+  repo: string; kind: StaticKind; label: string; builder: Builder; pkg: Json; buildCmd: string; outDir: string; outGuessed: boolean;
   env: ClientVar[]; unprefixed: string[]; dotenv: string[]; vite: ViteSettings | null; rr: ReactRouterSettings | null;
   base: { value: string; source: string } | null; nginx: NginxScan; leftovers: { files: string[]; substitution: string[] };
   removed: boolean; unconfirmedStatic: string | null;
@@ -294,9 +323,10 @@ function report(o: ReportInput): { actions: ActionItem[]; sections: string[] } {
     cra: "Create React App is deprecated upstream. It is supported here so existing apps can move to a distroless image; for new projects, use Vite or a React framework instead.",
     generic: "The build tool isn't one this stack recognises. The build command and output directory come from your answers, not from build configuration; nothing builder-specific is assumed.",
   };
-  sections.push(["## React build", "",
-    mdTable(["", ""], [["App type", BUILDER_LABEL[o.builder]], ["Build", mdCode(o.buildCmd)], ["Output served", `\`${o.outDir}\``],
+  sections.push([o.kind === "web" ? "## Static web build" : "## React build", "",
+    mdTable(["", ""], [["App type", o.label], ["Build", mdCode(o.buildCmd)], ["Output served", `\`${o.outDir}\``],
       ["Runtime", "Go static file server on distroless/static"], ["Routing", "unknown paths fall back to `index.html`; missing assets are a real 404"]]), "",
+    ...(o.kind === "web" ? ["Node.js is used only to build the app. The production build is a folder of static files, so nothing in the image needs Node.js at runtime.", ""] : []),
     note[o.builder], "",
     "The runtime image holds the compiled server and the build output only: no Node.js, no `node_modules`, no shell. Assets with a content hash in their name (`index-BWoJ4fK0.js`, `main.8e3f1a2b.js`) are cached for a year as immutable; other files, such as `favicon.ico` or anything copied from `public/`, are revalidated on every use.",
   ].join("\n"));
@@ -311,12 +341,12 @@ function report(o: ReportInput): { actions: ActionItem[]; sections: string[] } {
     "- Set them when the image is built. The Dockerfile declares an `ARG` for each variable found, so `docker build --build-arg VITE_API_URL=https://api.example.com .` works. A different value needs a different image.",
     "- Every value is **public**: anyone who loads the app can read it in the JavaScript. Never put API secrets, passwords or private keys in `VITE_*` or `REACT_APP_*`.",
     "- Vite's own values (`MODE`, `BASE_URL`, `PROD`, `DEV`, `SSR`) are not counted as application variables.",
-    "- This release does not add runtime configuration to React apps. To change settings per environment without rebuilding, the app itself has to load them at runtime (for example, fetch a JSON file on startup).", "");
+    `- This release does not add runtime configuration to ${o.kind === "web" ? "static web" : "React"} apps. To change settings per environment without rebuilding, the app itself has to load them at runtime (for example, fetch a JSON file on startup).`, "");
   if (o.unprefixed.length)
     L.push(`\`import.meta.env\` also reads ${code(o.unprefixed)}. Vite only exposes variables with its env prefix (\`${o.vite?.envPrefix ?? "VITE_"}\`), so these are \`undefined\` in the built app unless \`envPrefix\` includes them.`, "");
   if (o.vite?.envPrefix) L.push(`The Vite config sets \`envPrefix\` to \`${o.vite.envPrefix}\`; only \`VITE_*\` reads were scanned.`, "");
   if (o.dotenv.length)
-    L.push(`Local env files: ${code(o.dotenv)}. Vite and Create React App read them during the build, but the recommended \`.dockerignore\` keeps them out of the build context (\`.env.example\` stays in), so a secret in them can't be baked into the image by accident.`, "");
+    L.push(`Local env files: ${code(o.dotenv)}. ${o.kind === "web" ? "Vite reads" : "Vite and Create React App read"} them during the build, but the recommended \`.dockerignore\` keeps them out of the build context (\`.env.example\` stays in), so a secret in them can't be baked into the image by accident.`, "");
   sections.push(L.join("\n"));
 
   if (o.base) {

@@ -40,7 +40,7 @@ export interface StackResult {
 }
 
 export interface Stack {
-  id: "angular" | "node" | "python" | "react";
+  id: "angular" | "node" | "python" | "react" | "web";
   title: string;
   /** Confidence 0..1 that the repo is this kind of app, plus a one-line reason. */
   detect(repo: string): { score: number; reason: string } | null;
