@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Static web (Vite) stack (`npx distroless-setup web`)
+
+- **Fixed:** a Vite app without React (for example vanilla JS/TS) was detected as a Node.js
+  service because it has a `package.json`, and got a `distroless/nodejs` image built around
+  whatever `main` or `start` pointed at. The React stack only claimed apps with a React
+  dependency, so nothing else recognised a static Vite build.
+- New `web` stack for Vite apps without React whose production build is static files. It
+  reuses the React stack's static path as is: Node build stage, the shared Go static server,
+  `gcr.io/distroless/static-debian13:nonroot`, `VITE_*` build-time analysis, `build.outDir`
+  / `root` / `base` from the Vite config, hardened `.dockerignore`, read-only root. Node.js
+  builds the app; it is not in the runtime image.
+- **Detection needs several signals:** a `vite` dependency, a `vite.config.*` or a `vite
+  build` build script (followed through one `npm run`), and `index.html` at the Vite root.
+  Server evidence (Express/Fastify/Koa/Hono/NestJS, `build.ssr` or `vite build --ssr`, a
+  `start` script that runs Node, a `main` file that exists, outside Electron, or a Vite
+  meta-framework such as SvelteKit or Nuxt) keeps the `node` stack first, and running `web`
+  on such a project stops under `--yes`. Library builds (`build.lib`) are not claimed. React
+  apps, Angular and the Node stack's own detection are unchanged.
+
 ### Documentation
 
 - Added beginner-friendly, step-by-step walkthrough guides for every first-class stack

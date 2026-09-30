@@ -19,6 +19,7 @@ It looks at your repo, asks a few questions (every one has a sensible default), 
 |---|---|
 | **Angular 19+** | A tiny static Go server on `distroless/static` replaces nginx. Optional runtime config: `config.json` values overridden by env vars, so one image runs in every environment without a rebuild. |
 | **React** (static builds): Vite, React Router in SPA mode, Create React App | A Debian build stage runs your production build, and the same static Go server on `distroless/static` serves the output. No Node.js at runtime. `VITE_*` / `REACT_APP_*` variables are reported as the build-time, public values they are. |
+| **Static web (Vite)**: Vite apps without React (vanilla JS/TS, Vue, Svelte, ...) whose build is static files | The React stack's static path: Node.js builds the app in a Debian stage, and the same static Go server on `distroless/static` runs it. Node.js is a build tool here, not a runtime. |
 | **Node.js** — Express, NestJS, Next.js, Fastify, plain Node/TypeScript | A Debian build stage (install, build, drop dev dependencies) and a `distroless/nodejs` runtime. Next.js uses `output: 'standalone'`. |
 | **Python** — FastAPI, Flask, Django, plain scripts; pip, uv, Poetry, Pipenv | A virtualenv built against the runtime's own Python, copied into `distroless/python3`, served by uvicorn / gunicorn (with `uvicorn-worker` for ASGI) / hypercorn / granian / waitress. |
 
@@ -56,6 +57,7 @@ npx distroless-setup node ./services/api
 npx distroless-setup python
 npx distroless-setup angular
 npx distroless-setup react
+npx distroless-setup web
 ```
 
 Either form takes the same flags:
@@ -68,7 +70,7 @@ npx distroless-setup angular --yes      # named stack, accept every default (CI,
 
 | Option | |
 |---|---|
-| `angular` \| `react` \| `node` \| `python` | Optional. Names the stack and skips detection. Aliases: `nest`, `next`, `express`, `fastapi`, `django`, `flask`. Leave it out to auto-detect instead. |
+| `angular` \| `react` \| `web` \| `node` \| `python` | Optional. Names the stack and skips detection. Aliases: `nest`, `next`, `express`, `fastapi`, `django`, `flask`. Leave it out to auto-detect instead. |
 | `-n`, `--dry-run` | Print the plan and the generated Dockerfile; write only `DISTROLESS-MIGRATION.md`, marked as a dry run. |
 | `-y`, `--yes` | Use every default without prompting. |
 | `-h`, `--help` / `-v`, `--version` | |
@@ -93,7 +95,7 @@ Every runtime image:
 
 - runs as UID `65532` with group `0`, so it works on Kubernetes and on OpenShift's arbitrary UIDs;
 - listens on a non-privileged port;
-- has a `HEALTHCHECK` that needs no shell or curl (Node uses `fetch`, Python uses `urllib`, Angular and React use the server binary itself);
+- has a `HEALTHCHECK` that needs no shell or curl (Node uses `fetch`, Python uses `urllib`, Angular, React and static web use the server binary itself);
 - is compatible with `readOnlyRootFilesystem: true` (the report lists any folder that needs a volume).
 
 ### Angular
@@ -167,6 +169,30 @@ Directives it can't reproduce (auth, rewrites, TLS, `return`, `sub_filter`, rate
 and entrypoint scripts that rewrite files with `envsubst` or `sed` are listed in the
 report. The nginx files are only removed by default when none of that was found.
 
+### Static web (Vite)
+
+A `package.json` doesn't mean the app needs Node.js to **run**. Many Vite apps use Node.js
+only to **build**: `vite build` writes `index.html` and assets, and nothing server-side is
+left. The `web` stack handles those apps when they don't use React (vanilla JS/TS, Vue,
+Svelte, Preact, Solid, ...). It uses the React stack's static path unchanged: the same
+Node build stage, the same Go static server on `distroless/static`, the same `VITE_*`
+build-time analysis, `.dockerignore` hardening and read-only-root runtime. There is no
+Node.js in the final image.
+
+- **Detected** only from several signals together: a `vite` dependency, plus a
+  `vite.config.*` or a `build` script that runs `vite build` (directly or through one
+  `npm run`), plus an `index.html` at the Vite `root`. The output is `dist/`, or
+  `build.outDir` / `root` from the config, read as for React.
+- **Server evidence keeps it off the static path.** A server framework (Express, Fastify,
+  Koa, Hono, NestJS), a Vite SSR build (`build.ssr`, `vite build --ssr`), a `start`
+  script that runs `node`/`tsx`/`ts-node`/`nodemon`, a `main` file that exists, or a Vite
+  meta-framework (SvelteKit, Nuxt, Vike, SolidStart, TanStack Start, Analog, Qwik City,
+  Astro, Vinxi) makes detection prefer the `node` stack. Running `web` on such a project
+  explains why and stops unless you confirm the build output is a complete static app.
+  Electron's `main` (a desktop main process, not a web server) is not server evidence.
+- **Not handled:** Vite SSR, frameworks that build a server bundle, and library builds
+  (`build.lib`). React apps built with Vite belong to the `react` stack.
+
 ### Node.js
 
 - **Next.js:** offers to add `output: 'standalone'` to `next.config.*` (shown as a diff). The image then contains only the traced server files, and runs `node server.js`. If you decline, it runs `next start` on production `node_modules` instead. `NEXT_PUBLIC_*` variables are flagged, because `next build` inlines them, so setting them on the container does nothing.
@@ -229,6 +255,7 @@ it still works with `--read-only` plus only the writable mounts the report docum
 | Create React App (`build/`, `REACT_APP_*`) | yes | yes | no: generation-tested only |
 | Other React static builders (your build script, output folder you confirm) | manual path | yes | no |
 | React nginx import (headers, port, non-portable directives reported) | yes | yes | no |
+| Static web: Vite without React (auto-detected over Node, build-time `VITE_*`, no Node.js at runtime, SIGTERM) | yes | yes | **yes** |
 | Static server cache policy (hashed assets immutable, others revalidated, 404 for missing assets) | — | yes (Go tests) | **yes** (Angular and React fixtures) |
 | Node.js — Express / plain Node + TypeScript (`tsc`, dev-dependency prune) | yes | yes | **yes** |
 | Node.js — Next.js `output: 'standalone'` | yes | yes | **yes** |
@@ -279,7 +306,7 @@ Defaults, as published by distroless at the time of this release (Debian 13 "tri
 | Stack | Runtime | Build stage |
 |---|---|---|
 | Angular | `gcr.io/distroless/static-debian13:nonroot` | `node:<your major>-alpine`, `golang:1-alpine` |
-| React | `gcr.io/distroless/static-debian13:nonroot` | `node:<major>-trixie-slim`, `golang:1-alpine` |
+| React, Static web (Vite) | `gcr.io/distroless/static-debian13:nonroot` | `node:<major>-trixie-slim`, `golang:1-alpine` |
 | Node.js | `gcr.io/distroless/nodejs{22,24,26}-debian13:nonroot` | `node:<major>-trixie-slim` |
 | Python | `gcr.io/distroless/python3-debian13:nonroot` | `python:3.13-slim-trixie` |
 
@@ -326,6 +353,7 @@ A distroless runtime has no shell, no package manager and no coreutils, so `dock
 - One service per run. In a monorepo, run it in each service's folder.
 - Angular SSR isn't served. The static browser build is; for SSR, containerise the server bundle with the `node` stack.
 - React is static builds only. React Router SSR, Remix, custom SSR servers and React Server Components need a server runtime and are not handled. React apps also get no runtime config: `VITE_*` / `REACT_APP_*` values are fixed per image.
+- Static web is Vite only, and only for builds that are static files. Vite SSR, meta-frameworks that build a server (SvelteKit, Nuxt, Vike, ...) and library builds are not handled; the same no-runtime-config and base-path limits as React apply.
 - The static server serves from `/`. Apps built for a sub-path (Vite `base`, CRA `homepage`, React Router `basename`) need an ingress that strips the prefix.
 - Next.js `output: 'export'` sites are detected but not handled yet. They need only a static server.
 - Detection is static analysis, not execution. The tool shows what it found and asks before relying on it. Anything it can't decide safely goes in the report instead of being changed.

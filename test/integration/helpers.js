@@ -84,7 +84,8 @@ function snapshot(dir) {
  * detected default. Fixtures are written so those defaults are the path under test.
  */
 function runCli(stack, dir, extraArgs = []) {
-  const r = run(process.execPath, [CLI, stack, dir, "--yes", ...extraArgs], {
+  // A null stack leaves detection to the CLI, as `npx distroless-setup .` does.
+  const r = run(process.execPath, [CLI, ...(stack ? [stack] : []), dir, "--yes", ...extraArgs], {
     cwd: dir,
     env: { ...process.env, NO_COLOR: "1", DISTROLESS_SETUP_ASCII: "1", FORCE_COLOR: "" },
     timeout: 5 * 60 * 1000,

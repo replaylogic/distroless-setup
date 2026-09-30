@@ -14,6 +14,7 @@ Small, real projects used by `test/integration/`. Each one exists because it exe
 | `python-django-uv` | uv (`uv sync --frozen`), Django WSGI discovery from `manage.py`, `collectstatic` during the build, WhiteNoise serving the result |
 | `angular-spa` | Generated Go static server, AST-rewritten `environment` reads, runtime config from env vars, per-configuration config via `fileReplacements` |
 | `react-vite` | React + Vite + TypeScript with `react-router` client routes: a real `vite build` in the Node stage, the shared Go static server, `VITE_*` compiled in from `--build-arg`, hashed vs unversioned (`public/`) cache policy |
+| `vite-static` | Vite without React (plain TypeScript): auto-detected as the `web` stack rather than Node.js, then the same static runtime as `react-vite` with no Node.js in the image |
 
 ## The one rule
 

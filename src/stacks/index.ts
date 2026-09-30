@@ -4,8 +4,9 @@ import { angularStack } from "./angular";
 import { nodeStack } from "./node";
 import { pythonStack } from "./python";
 import { reactStack } from "./react";
+import { webStack } from "./web";
 
-export const STACKS: Stack[] = [angularStack, nodeStack, pythonStack, reactStack];
+export const STACKS: Stack[] = [angularStack, nodeStack, pythonStack, reactStack, webStack];
 
 /** Every stack that recognises the repo, most confident first. */
 export function detectStacks(repo: string): { st: Stack; d: { score: number; reason: string } }[] {

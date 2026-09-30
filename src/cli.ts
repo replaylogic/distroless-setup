@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* distroless-setup: move Angular, React, Node.js and Python apps to distroless images. */
+/* distroless-setup: move Angular, React, Vite static web, Node.js and Python apps to distroless images. */
 import * as fs from "fs";
 import * as path from "path";
 import { planDockerignore } from "./core/docker";
@@ -12,7 +12,7 @@ import { STACKS, detectStacks } from "./stacks";
 const HELP = `${s(TOOL, "bold")} v${VERSION}: move an app to a distroless container image.
 
 ${s("Usage", "bold")}
-  npx ${TOOL} [angular|react|node|python] [path] [options]
+  npx ${TOOL} [angular|react|web|node|python] [path] [options]
 
   With no stack name, the project type is detected and you confirm it.
 
@@ -21,6 +21,8 @@ ${s("Stacks", "bold")}
             runtime config.json driven by env vars (no rebuild to change it)
   react     Static/client-rendered React: Vite, React Router in SPA mode
             (ssr: false), Create React App; static Go server on distroless/static
+  web       Static web apps built with Vite without React (vanilla, Vue, ...):
+            Node.js builds them, the same static Go server runs them
   node      Node.js / TypeScript services: Express, NestJS, Next.js (standalone)
   python    Python services: FastAPI, Flask, Django or a plain script
             (pip, uv, Poetry, Pipenv)
@@ -77,7 +79,7 @@ async function main() {
   if (!fs.existsSync(repo) || !fs.statSync(repo).isDirectory()) throw new AbortError(`${repo} is not a directory`);
   const P = new Prompter(args.yes);
   try {
-    banner(`${TOOL} v${VERSION}`, "distroless images for Angular, React, Node.js and Python");
+    banner(`${TOOL} v${VERSION}`, "distroless images for Angular, React, static web, Node.js and Python");
     line(`  ${s("repo", "gray")} ${repo}` + (args.dryRun ? `   ${s("[dry run]", "yellow")}` : ""));
     const stack = args.stack ?? (section("Project type"), await pickStack(repo, P));
     const plan = new Plan(repo);

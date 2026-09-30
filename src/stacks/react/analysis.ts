@@ -138,6 +138,63 @@ export function viteSettings(repo: string, pkg: Json): ViteSettings {
   return { file, outDir, base, envPrefix, notes };
 }
 
+/** Vite-based frameworks that render on a server or build their own deployment: never a plain static build. */
+const VITE_SERVER_FW = ["@sveltejs/kit", "nuxt", "vike", "vite-plugin-ssr", "@solidjs/start", "@tanstack/react-start",
+  "@tanstack/solid-start", "@analogjs/platform", "@builder.io/qwik-city", "astro", "vinxi"];
+const START_SCRIPTS = ["start", "start:prod", "serve", "prod"];
+
+/** The command a package script runs, following one `npm run x` / `yarn x` / `pnpm x` hop. */
+function scriptText(pkg: Json, name: string): string {
+  const s = String(pkg.scripts?.[name] ?? "");
+  const hop = /^\s*(?:npm\s+run(?:-script)?|yarn(?:\s+run)?|pnpm(?:\s+run)?)\s+([\w:.-]+)\s*$/.exec(s)?.[1];
+  return hop && pkg.scripts?.[hop] ? `${s} ${pkg.scripts[hop]}` : s;
+}
+
+export interface ViteStaticApp {
+  /** Why this looks like a Vite app: config file, `vite build` script, the index.html entry. */
+  evidence: string[];
+  /** The app's index.html, relative to the repo. */
+  index: string;
+  /** Why it may need a Node.js server at runtime after all, or null. */
+  server: string | null;
+}
+
+/**
+ * A Vite application (not a library) whose production build could be a static folder: a
+ * `vite` dependency, a vite.config.* or a `vite build` script, and index.html at the Vite
+ * root. Null when that evidence is missing. Anything suggesting a Node.js server at runtime
+ * (a server framework, an SSR build, a start script or `main` that runs node) is returned
+ * in `server`; the caller must not treat such a repo as static without asking.
+ */
+export function viteStaticApp(repo: string, pkg: Json): ViteStaticApp | null {
+  const d = deps(pkg);
+  if (!d.vite) return null;
+  const file = configFile(repo, "vite.config");
+  const buildsWithVite = /\bvite\s+build\b/.test(scriptText(pkg, "build"));
+  if (!file && !buildsWithVite) return null;
+  const cfg = file ? readConfig(file, ["root", "build.lib", "build.ssr"]) : new Map<string, ConfigValue>();
+  if (cfg.has("build.lib") || cfg.get("root")?.kind === "dynamic") return null;
+  const html = path.posix.join(cleanDir(str(cfg.get("root")) ?? "."), "index.html").replace(/^\.\//, "");
+  if (!exists(path.join(repo, html))) return null;
+
+  const scripts: Record<string, string> = pkg.scripts ?? {};
+  const ssr = cfg.get("build.ssr");
+  // A runner followed by a file argument, after any flags: `node --env-file=.env server.js`, not `node --version`.
+  const start = START_SCRIPTS.find((k) => /(?:^|&&|;|\s)(?:node|tsx|ts-node|nodemon|vite-node|pm2(?:-runtime)?)(?:\s+-\S+)*\s+[^\s&|;-]/.test(scriptText(pkg, k)));
+  // Only a `main` file that exists counts (`npm init` leaves a stale "index.js"). Electron runs
+  // `main` as its desktop main process, not as a web server.
+  const main = typeof pkg.main === "string" && /\.[cm]?[jt]s$/.test(pkg.main) && exists(path.join(repo, pkg.main)) && !d.electron ? pkg.main : null;
+  const fw = VITE_SERVER_FW.find((f) => d[f]) ?? serverFramework(d);
+  const server =
+    fw ? `depends on ${fw}`
+    : ssr && !(ssr.kind === "literal" && ssr.value === false) ? "sets `build.ssr` in the Vite config"
+    : Object.values(scripts).some((s) => /\bvite\s+build\b[^&|;]*--ssr\b/.test(String(s))) ? "has a `vite build --ssr` script"
+    : start ? `has a "${start}" script that runs Node.js`
+    : main ? `has "main": "${main}" in package.json`
+    : null;
+  return { evidence: [...(file ? [path.basename(file)] : []), ...(buildsWithVite ? ["`vite build`"] : []), html], index: html, server };
+}
+
 export interface ReactRouterSettings {
   file: string | null;
   /** false only when the config literally says `ssr: false`. */
